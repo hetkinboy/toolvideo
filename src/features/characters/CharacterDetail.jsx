@@ -201,53 +201,90 @@ export default function CharacterDetail() {
     character.default_outfit && `Canonical outfit: ${character.default_outfit}`,
   ].filter(Boolean).join('; ');
 
-  const identitySource = [character.appearance, character.face, character.description]
+  const identitySource = [character.appearance, character.face, character.description, character.body]
     .filter(Boolean)
     .join(' ');
+  const ageMatch = String(character.age || '').match(/\d+/);
+  const numericAge = ageMatch ? Number.parseInt(ageMatch[0], 10) : null;
+  const isNonHuman = /\b(cat|dog|wolf|fox|dragon|animal|creature|spirit beast)\b|mèo|chó|sói|cáo|rồng|linh thú/i.test(identitySource);
   const hasScar = /\bscar\b|sẹo/i.test(identitySource);
   const scarConsistencyInstruction = hasScar
     ? 'Preserve the exact scar described in the character profile, including its position, size, and shape. Do not add any other scars.'
     : 'Do not add scars or facial wounds. Preserve only facial marks explicitly described in the character profile.';
+
+  let demographicLockInstruction;
+  if (isNonHuman) {
+    demographicLockInstruction = 'SPECIES PRIORITY LOCK: this is a non-human character. Preserve the exact species, life stage, scale, anatomy, fur/skin pattern, and creature proportions described in the written profile. Do not humanize the character. The written profile overrides conflicting visual cues in any attached reference image.';
+  } else if (numericAge !== null && numericAge <= 12) {
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly prepubescent ${numericAge}-year-old child with childlike facial proportions, a small jaw, rounder cheeks, narrow child shoulders, and age-appropriate anatomy. No teenage or adult appearance, no mature makeup, no adult feminine or masculine curves, and no sexualized pose or clothing. ${character.height ? `The stated height (${character.height}) is an unusual fantasy trait and must not be interpreted as physical maturity.` : ''} The written age and profile override any older-looking visual cues in an attached reference image.`;
+  } else if (numericAge !== null && numericAge <= 17) {
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly adolescent ${numericAge}-year-old with age-appropriate teenage facial and body proportions. Do not age the character into a mature adult, exaggerate adult secondary sexual characteristics, or use sexualized styling. The written age and profile override conflicting visual cues in any attached reference image.`;
+  } else if (numericAge !== null && numericAge >= 60) {
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character as exactly ${numericAge} years old with believable senior facial structure, skin, posture, and body proportions. Do not make the character substantially younger. The written age and profile override conflicting visual cues in any attached reference image.`;
+  } else if (numericAge !== null) {
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character as an adult of exactly ${numericAge} years old with age-appropriate facial and body proportions. Do not make the character noticeably younger or older. The written age and profile override conflicting visual cues in any attached reference image.`;
+  } else {
+    demographicLockInstruction = 'DEMOGRAPHIC LOCK: preserve the exact apparent age, gender presentation, species, scale, and body proportions stated in the written profile. The written profile overrides conflicting visual cues in any attached reference image.';
+  }
+
+  const subjectNoun = isNonHuman ? 'character' : 'person';
+  const anatomyStandard = isNonHuman ? 'species-appropriate anatomy' : numericAge !== null && numericAge <= 12 ? 'age-appropriate child anatomy' : numericAge !== null && numericAge <= 17 ? 'age-appropriate adolescent anatomy' : 'realistic age-appropriate anatomy';
+  const portraitFraming = isNonHuman ? 'close-up identity portrait showing the head and upper body' : 'head-and-shoulders portrait';
+  const portraitIdentityFeatures = isNonHuman
+    ? 'species, facial structure, eyes, ears, muzzle or beak, fur or skin pattern, scale, and signature accessories'
+    : 'face, facial proportions, eyes, eyebrows, nose, lips, skin tone, hairstyle, hairline, age, and gender presentation';
+  const appearanceGuardInstruction = isNonHuman
+    ? 'Do not redesign or humanize the character, change its species, or alter its fur or skin pattern.'
+    : 'Do not redesign the character or change the hairstyle.';
+  const fullBodyPose = isNonHuman ? 'in a natural species-appropriate pose with the entire body, paws, and tail visible' : 'standing naturally from head to feet';
+  const fullBodyFeatures = isNonHuman
+    ? 'species, face, body proportions, scale, fur or skin pattern, paws, tail, signature accessories, and color palette'
+    : 'face, hairstyle, age-appropriate body proportions, height impression, canonical outfit, belt, jewelry, footwear, and color palette';
+  const backViewFeatures = isNonHuman
+    ? 'species anatomy, head shape, ears, back, body proportions, fur or skin pattern, tail, signature accessories, and color palette'
+    : 'hairstyle, hair length, tied hair shape, shoulder width, age-appropriate body proportions, canonical outfit, belt, fabric layers, accessories, and color palette';
   const masterDetailSubjects = hasScar
-    ? 'the explicitly described scar, hair, fabric, belt, jewelry, and footwear'
-    : 'the eyes, hair, fabric, belt, jewelry, and footwear';
+    ? `the explicitly described scar, ${isNonHuman ? 'eyes, fur or skin texture, paws, tail, and signature accessories' : 'hair, fabric, belt, jewelry, and footwear'}`
+    : isNonHuman
+      ? 'the eyes, fur or skin texture, species-specific features, paws, tail, and signature accessories'
+      : 'the eyes, hair, fabric, belt, jewelry, and footwear';
 
   const referencePromptTemplates = [
     {
       key: 'master',
       label: '1. Bảng mẫu tổng',
       description: 'Tạo ảnh gốc nhiều góc để làm chuẩn nhận diện nhân vật.',
-      prompt: `Create a professional character reference sheet for the following locked identity: ${identityFacts}. Show the exact same person in a large full-body front view, a clean head-and-shoulders portrait, left 3/4 view, right 3/4 view, side/back view, and small close-up detail insets for ${masterDetailSubjects}. Keep one consistent face, hairstyle, eye shape, body proportions, age, and canonical outfit in every panel. ${scarConsistencyInstruction} Neutral warm-gray studio background, soft even lighting, clean cinematic concept art, realistic anatomy, sharp facial details, consistent scale, no story scene. Minimal or no text, no watermark, no logo, no extra characters, no duplicate limbs, no distorted hands, no identity drift.`,
+      prompt: `Create a professional character reference sheet for the following locked identity: ${identityFacts}. ${demographicLockInstruction} Show the exact same ${subjectNoun} in a large full-body front view, a clean ${portraitFraming}, left 3/4 view, right 3/4 view, side/back view, and small close-up detail insets for ${masterDetailSubjects}. Keep one consistent identity, facial structure, eye shape, body proportions, apparent age or life stage, and canonical appearance in every panel. ${scarConsistencyInstruction} Neutral warm-gray studio background, soft even lighting, clean cinematic concept art, ${anatomyStandard}, sharp identity details, consistent scale, no story scene. Minimal or no text, no watermark, no logo, no extra characters, no duplicate limbs, no distorted hands or paws, no identity drift.`,
     },
     {
       key: 'portrait',
       label: '2. Chân dung cận mặt',
       description: 'Dùng bảng mẫu tổng làm ảnh tham chiếu, chỉ tạo một chân dung sạch.',
-      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean single head-and-shoulders portrait of ${character.name}. Preserve the exact same face, facial proportions, eyes, eyebrows, nose, lips, skin tone, hairstyle, hairline, age, and gender from the master sheet. ${scarConsistencyInstruction} Neutral expression, front-facing camera, soft neutral studio lighting, plain background, high-detail cinematic realism. Do not redesign the character, do not change the hairstyle, no extra accessories, no text, no watermark, no other people. Identity consistency is more important than artistic variation.`,
+      prompt: `Use the attached master character sheet as the primary identity reference. The written character profile has priority over any conflicting visual cue in the reference image. ${demographicLockInstruction} Create a clean single ${portraitFraming} of ${character.name}. Preserve the exact same ${portraitIdentityFeatures} from the valid identity details. ${scarConsistencyInstruction} Neutral expression, front-facing camera, soft neutral studio lighting, plain background, high-detail cinematic realism, ${anatomyStandard}. ${appearanceGuardInstruction} No extra accessories, no text, no watermark, no other characters. Identity, age, and species consistency are more important than artistic variation.`,
     },
     {
       key: 'three-quarter',
       label: '3. Góc 3/4 trái/phải',
       description: 'Tạo góc mới nhưng khóa nguyên khuôn mặt và kiểu tóc.',
-      prompt: `Use the attached master character sheet as the only identity reference. Generate ${character.name} in a clean 3/4 view, first version facing slightly left; keep the same face, eye shape, eyebrows, nose, lips, jawline, hairline, hairstyle, age, body proportions, and canonical outfit. ${scarConsistencyInstruction} This is a controlled camera-angle variation, not a redesign. Neutral background, even cinematic lighting, shoulders and upper torso visible, realistic anatomy, no text, no watermark, no extra characters, no identity drift.`,
+      prompt: `Use the attached master character sheet as the identity reference, but let the written character profile override conflicting age, species, or body cues. ${demographicLockInstruction} Generate ${character.name} in a clean 3/4 view, first version facing slightly left; preserve the same ${portraitIdentityFeatures}, body proportions, scale, and canonical appearance. ${scarConsistencyInstruction} This is a controlled camera-angle variation, not a redesign. Neutral background, even cinematic lighting, head and upper body visible, ${anatomyStandard}, no text, no watermark, no extra characters, no identity drift or age drift.`,
     },
     {
       key: 'full-body',
       label: '4. Toàn thân chính diện',
       description: 'Làm ảnh tham chiếu cho dáng người, tỷ lệ cơ thể và trang phục.',
-      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean full-body front view of ${character.name}, standing naturally from head to feet. Preserve the exact same face, hairstyle, body proportions, height impression, canonical outfit, belt, jewelry, footwear, and color palette. Show the entire silhouette clearly on a plain neutral background with soft studio lighting. No dramatic action pose, no cropped feet, no text, no watermark, no extra people, no costume redesign, no anatomy errors.`,
+      prompt: `Use the attached master character sheet as the identity reference, but let the written character profile override conflicting age, species, or body cues. ${demographicLockInstruction} Create a clean full-body front view of ${character.name}, ${fullBodyPose}. Preserve the exact same ${fullBodyFeatures}. Show the entire silhouette clearly on a plain neutral background with soft studio lighting and ${anatomyStandard}. No dramatic action pose, no cropped feet, paws, or tail, no text, no watermark, no extra characters, no costume redesign, no anatomy errors, no age drift.`,
     },
     {
       key: 'back-side',
       label: '5. Góc nghiêng và phía sau',
       description: 'Giúp mô hình hiểu tóc, vai, lưng và cấu trúc trang phục.',
-      prompt: `Use the attached master character sheet as the only identity reference. Create a clean rear 3/4 view of ${character.name}, with enough side profile to identify the same person. Preserve the exact same hairstyle, hair length, tied hair shape, shoulder width, body proportions, canonical outfit, belt, fabric layers, accessories, and color palette. Neutral background, soft even lighting, full upper body or full body visible, realistic cinematic concept art. No new costume, no extra characters, no text, no watermark, no identity drift.`,
+      prompt: `Use the attached master character sheet as the identity reference, but let the written character profile override conflicting age, species, or body cues. ${demographicLockInstruction} Create a clean rear 3/4 view of ${character.name}, with enough side profile to identify the same ${subjectNoun}. Preserve the exact same ${backViewFeatures}. Neutral background, soft even lighting, full upper body or full body visible, realistic cinematic concept art with ${anatomyStandard}. No new costume or accessories, no extra characters, no text, no watermark, no identity drift or age drift.`,
     },
     {
       key: 'expression',
       label: '6. Biểu cảm nhân vật',
       description: 'Tạo thêm ảnh biểu cảm nhưng vẫn giữ nguyên nhận diện.',
-      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean portrait of ${character.name} with a subtle serious, emotionally restrained expression suitable for a cinematic drama. Preserve the exact same face, eyes, eyebrows, hairstyle, skin tone, age, and facial proportions. ${scarConsistencyInstruction} Change expression only; do not change identity, hairstyle, outfit, or age. Soft cinematic key light, plain background, realistic detail, no text, no watermark, no other people, no exaggerated facial distortion.`,
+      prompt: `Use the attached master character sheet as the identity reference, but let the written character profile override conflicting age, species, or body cues. ${demographicLockInstruction} Create a clean portrait of ${character.name} with a subtle serious, emotionally restrained expression suitable for a cinematic drama. Preserve the exact same ${portraitIdentityFeatures}. ${scarConsistencyInstruction} Change expression only; do not change identity, species, canonical appearance, or apparent age. Soft cinematic key light, plain background, realistic detail with ${anatomyStandard}, no text, no watermark, no other characters, no exaggerated facial distortion, no age drift.`,
     },
   ];
 
