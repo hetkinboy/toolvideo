@@ -17,6 +17,9 @@ export default function CharacterDetail() {
   const [promptFiles, setPromptFiles] = useState({});
   const [uploadingPromptKey, setUploadingPromptKey] = useState('');
   const [previewAsset, setPreviewAsset] = useState(null);
+  const [apparentAgeDraft, setApparentAgeDraft] = useState('');
+  const [apparentAgeSaving, setApparentAgeSaving] = useState(false);
+  const [apparentAgeMessage, setApparentAgeMessage] = useState('');
 
   useEffect(() => {
     loadCharacter();
@@ -41,6 +44,7 @@ export default function CharacterDetail() {
     try {
       const data = await api.getCharacterFull(id);
       setCharacter(data);
+      setApparentAgeDraft(data.apparent_age || '');
       try { setReferenceAssets(await api.getCharacterReferenceAssets(id)); } catch { setReferenceAssets([]); }
     } catch (err) {
       console.error(err);
@@ -150,8 +154,23 @@ export default function CharacterDetail() {
     }
   };
 
+  const saveApparentAge = async () => {
+    setApparentAgeSaving(true);
+    setApparentAgeMessage('');
+    try {
+      const updated = await api.updateCharacter(character.id, { apparent_age: apparentAgeDraft.trim() });
+      setCharacter((current) => ({ ...current, ...updated }));
+      setApparentAgeMessage('Đã lưu độ tuổi ngoại hình. Các câu lệnh đã được cập nhật.');
+    } catch (err) {
+      setApparentAgeMessage('Lỗi: ' + err.message);
+    } finally {
+      setApparentAgeSaving(false);
+    }
+  };
+
   const profileFields = [
     { label: 'Mô tả', value: character.description },
+    { label: 'Độ tuổi ngoại hình', value: character.apparent_age || character.age },
     { label: 'Ngoại hình', value: character.appearance },
     { label: 'Khuôn mặt', value: character.face },
     { label: 'Tóc', value: character.hair },
@@ -191,7 +210,9 @@ export default function CharacterDetail() {
   const identityFacts = [
     `Character: ${character.name}`,
     character.alias && `Alias: ${character.alias}`,
-    character.age && `Age: ${character.age}`,
+    !character.apparent_age && character.age && `Age: ${character.age}`,
+    character.apparent_age && `Chronological age: ${character.age || 'unknown'}`,
+    character.apparent_age && `Apparent visual age: ${character.apparent_age}`,
     character.gender && `Gender: ${character.gender}`,
     character.height && `Height: ${character.height}`,
     character.face && `Face: ${character.face}`,
@@ -204,7 +225,10 @@ export default function CharacterDetail() {
   const identitySource = [character.appearance, character.face, character.description, character.body]
     .filter(Boolean)
     .join(' ');
-  const ageMatch = String(character.age || '').match(/\d+/);
+  const hasApparentAgeOverride = Boolean(String(character.apparent_age || '').trim());
+  const visualAgeValue = hasApparentAgeOverride ? character.apparent_age : character.age;
+  const visualAgeLabel = String(visualAgeValue || '').trim();
+  const ageMatch = visualAgeLabel.match(/\d+/);
   const numericAge = ageMatch ? Number.parseInt(ageMatch[0], 10) : null;
   const isNonHuman = /\b(cat|dog|wolf|fox|dragon|animal|creature|spirit beast)\b|mèo|chó|sói|cáo|rồng|linh thú/i.test(identitySource);
   const hasScar = /\bscar\b|sẹo/i.test(identitySource);
@@ -216,15 +240,19 @@ export default function CharacterDetail() {
   if (isNonHuman) {
     demographicLockInstruction = 'SPECIES PRIORITY LOCK: this is a non-human character. Preserve the exact species, life stage, scale, anatomy, fur/skin pattern, and creature proportions described in the written profile. Do not humanize the character. The written profile overrides conflicting visual cues in any attached reference image.';
   } else if (numericAge !== null && numericAge <= 12) {
-    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly prepubescent ${numericAge}-year-old child with childlike facial proportions, a small jaw, rounder cheeks, narrow child shoulders, and age-appropriate anatomy. No teenage or adult appearance, no mature makeup, no adult feminine or masculine curves, and no sexualized pose or clothing. ${character.height ? `The stated height (${character.height}) is an unusual fantasy trait and must not be interpreted as physical maturity.` : ''} The written age and profile override any older-looking visual cues in an attached reference image.`;
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly prepubescent child with an apparent age of ${visualAgeLabel}, childlike facial proportions, a small jaw, rounder cheeks, narrow child shoulders, and age-appropriate anatomy. No teenage or adult appearance, no mature makeup, no adult feminine or masculine curves, and no sexualized pose or clothing. ${character.height ? `The stated height (${character.height}) is an unusual fantasy trait and must not be interpreted as physical maturity.` : ''} The written age and profile override any older-looking visual cues in an attached reference image.`;
   } else if (numericAge !== null && numericAge <= 17) {
-    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly adolescent ${numericAge}-year-old with age-appropriate teenage facial and body proportions. Do not age the character into a mature adult, exaggerate adult secondary sexual characteristics, or use sexualized styling. The written age and profile override conflicting visual cues in any attached reference image.`;
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict a clearly adolescent character with an apparent age of ${visualAgeLabel} and age-appropriate teenage facial and body proportions. Do not age the character into a mature adult, exaggerate adult secondary sexual characteristics, or use sexualized styling. The written age and profile override conflicting visual cues in any attached reference image.`;
   } else if (numericAge !== null && numericAge >= 60) {
-    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character as exactly ${numericAge} years old with believable senior facial structure, skin, posture, and body proportions. Do not make the character substantially younger. The written age and profile override conflicting visual cues in any attached reference image.`;
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character with an apparent age of ${visualAgeLabel} and believable senior facial structure, skin, posture, and body proportions. Do not make the character substantially younger. The written age and profile override conflicting visual cues in any attached reference image.`;
   } else if (numericAge !== null) {
-    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character as an adult of exactly ${numericAge} years old with age-appropriate facial and body proportions. Do not make the character noticeably younger or older. The written age and profile override conflicting visual cues in any attached reference image.`;
+    demographicLockInstruction = `AGE PRIORITY LOCK: depict the character as an adult with an apparent age of ${visualAgeLabel} and age-appropriate facial and body proportions. Do not make the character noticeably younger or older than this visible age. The written age and profile override conflicting visual cues in any attached reference image.`;
   } else {
     demographicLockInstruction = 'DEMOGRAPHIC LOCK: preserve the exact apparent age, gender presentation, species, scale, and body proportions stated in the written profile. The written profile overrides conflicting visual cues in any attached reference image.';
+  }
+
+  if (hasApparentAgeOverride) {
+    demographicLockInstruction += ` CULTIVATION/IMMORTALITY AGE OVERRIDE: the chronological age is ${character.age || 'unknown'}, but the visible appearance is permanently locked to ${character.apparent_age}. Never add wrinkles, aging, or an older body based on chronological age. Visual age takes priority for image generation.`;
   }
 
   const subjectNoun = isNonHuman ? 'character' : 'person';
@@ -373,7 +401,7 @@ export default function CharacterDetail() {
               {character.alias && <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>"{character.alias}"</span>}
               <span style={{ color: roleColors[character.role], fontSize: 'var(--text-xs)', fontWeight: 600, textTransform: 'uppercase' }}>{roleLabels[character.role] || character.role}</span>
               <span className={`canon-badge canon-badge--${character.status}`}>{statusLabels[character.status] || character.status}</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>{character.age} · {genderLabels[character.gender] || character.gender} · {character.height}</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>Tuổi thật: {character.age}{character.apparent_age ? ` · Ngoại hình: ${character.apparent_age}` : ''} · {genderLabels[character.gender] || character.gender} · {character.height}</span>
             </div>
           </div>
         </div>
@@ -425,6 +453,24 @@ export default function CharacterDetail() {
             </div>
             <div style={{ marginTop: 'var(--space-4)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
               {character.name}: khuôn mặt={character.face || character.appearance || 'giữ khuôn mặt nhất quán'}, tóc={character.hair || 'giữ kiểu tóc nhất quán'}, mắt={character.eyes || 'giữ đôi mắt nhất quán'}, vóc dáng={character.body || 'giữ vóc dáng nhất quán'}, trang phục={character.default_outfit || 'trang phục đặc trưng'}
+            </div>
+            <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--border-subtle)' }}>
+              <div className="label">Độ tuổi ngoại hình dùng để sinh ảnh</div>
+              <div className="flex gap-2">
+                <input
+                  className="input"
+                  value={apparentAgeDraft}
+                  onChange={(event) => setApparentAgeDraft(event.target.value)}
+                  placeholder={`Để trống sẽ dùng tuổi thật: ${character.age || 'chưa xác định'}`}
+                />
+                <button className="btn btn--primary btn--sm" type="button" disabled={apparentAgeSaving} onClick={saveApparentAge}>
+                  {apparentAgeSaving ? 'Đang lưu...' : 'Lưu độ tuổi ngoại hình'}
+                </button>
+              </div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>
+                Ví dụ: tuổi thật 300 nhưng ngoại hình 22–25. Câu lệnh sẽ giữ diện mạo trẻ, không ép nhân vật thành người già.
+              </div>
+              {apparentAgeMessage && <div style={{ color: apparentAgeMessage.startsWith('Lỗi:') ? 'var(--color-error)' : 'var(--color-success)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>{apparentAgeMessage}</div>}
             </div>
           </div>
 

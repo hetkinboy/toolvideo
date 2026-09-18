@@ -98,7 +98,8 @@ export default function CharacterList() {
                 {roleLabels[char.role]}
               </div>
               <div className="character-card__meta">
-                <span>{char.age}</span>
+                <span>Tuổi thật: {char.age}</span>
+                {char.apparent_age && <><span>·</span><span>Ngoại hình: {char.apparent_age}</span></>}
                 <span>·</span>
                 <span>{char.gender}</span>
                 <span>·</span>

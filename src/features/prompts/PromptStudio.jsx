@@ -87,7 +87,7 @@ export default function PromptStudio() {
       ? `Cảnh ${prevScene.scene_number}: ${prevScene.title}\nDiễn biến: ${prevScene.action}\nEnding State: ${prevScene.ending_state}`
       : 'Không có (đây là cảnh đầu tiên)';
 
-    const charBlock = characters.map(c => `- ${c.name} (${c.role}, ${c.gender}): ${c.personality}. Bí mật: ${c.secret || 'none'}`).join('\n');
+    const charBlock = characters.map(c => `- ${c.name} (${c.role}, ${c.gender}, tuổi thật: ${c.age || 'không rõ'}, độ tuổi ngoại hình: ${c.apparent_age || c.age || 'theo hồ sơ'}): ${c.personality}. Bí mật: ${c.secret || 'none'}`).join('\n');
 
     const locBlock = locations.map(l => `- ${l.name} (${l.type}): ${l.description || l.architecture || ''}`).join('\n');
 

@@ -25,8 +25,11 @@ export function buildShotPrompts(shot = {}, scene = {}, project = {}, characters
     ...selectedCharacters.map((character) => {
       const refs = referenceAssets.filter((asset) => asset.target_type === 'character' && asset.target_id === character.id && asset.asset_type === 'image' && asset.status !== 'archived');
       const refText = refs.length ? `Reference image: ${refs.map((asset) => asset.file_path || asset.thumbnail || asset.id).join(' | ')}` : '';
+      const ageLock = character.apparent_age
+        ? `chronological age=${character.age || 'unknown'}, apparent visual age=${character.apparent_age}; keep the apparent visual age even if the character is immortal or centuries old`
+        : `visual age=${character.age || 'profile-defined age'}`;
       return [
-        `${character.name}: face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
+        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
         refText,
       ].filter(Boolean).join(', ');
     }),

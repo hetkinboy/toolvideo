@@ -382,7 +382,7 @@ function getIdentityPack(db, projectId, characterIds) {
 
   const placeholders = ids.map(() => '?').join(', ');
   const characters = db.prepare(`
-    SELECT id, name, appearance, face, hair, eyes, body, default_outfit
+    SELECT id, name, age, apparent_age, appearance, face, hair, eyes, body, default_outfit
     FROM characters
     WHERE project_id = ? AND id IN (${placeholders})
   `).all(projectId, ...ids);
@@ -413,8 +413,12 @@ function identityLockText(identityPack) {
       const reference = refsByCharacter[character.id]
         ?.map((ref) => `${ref.reference_kind || 'other'}: ${ref.file_path || ref.thumbnail || `asset:${ref.id}`}`)
         .join(' | ');
+      const visibleAge = character.apparent_age || character.age || 'profile-defined age';
+      const ageLock = character.apparent_age
+        ? `chronological age=${character.age || 'unknown'}, apparent visual age=${visibleAge} (visual age overrides chronological age for appearance)`
+        : `visual age=${visibleAge}`;
       return [
-        `${character.name}: face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
+        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
         reference ? `Reference image: ${reference}` : '',
       ].filter(Boolean).join(', ');
     }),
@@ -1046,16 +1050,17 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
 
           db.prepare(`
             INSERT INTO characters (
-              id, project_id, name, alias, role, age, gender, height, description,
+              id, project_id, name, alias, role, age, apparent_age, gender, height, description,
               appearance, default_outfit, personality, speaking_style, background,
               goal, motivation, strength, weakness, secret, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             charId, projectId,
             c.name || 'Nhân vật mới',
             c.alias || '',
             role,
             c.age || '20',
+            c.apparent_age || '',
             c.gender || 'Nam',
             c.height || '175cm',
             c.description || '',

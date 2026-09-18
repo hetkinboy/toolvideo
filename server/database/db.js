@@ -26,6 +26,11 @@ function ensureSchemaMigrations(database) {
   if (!assetColumns.includes('reference_kind')) {
     database.exec("ALTER TABLE assets ADD COLUMN reference_kind TEXT DEFAULT ''");
   }
+
+  const characterColumns = database.pragma('table_info(characters)').map((column) => column.name);
+  if (!characterColumns.includes('apparent_age')) {
+    database.exec("ALTER TABLE characters ADD COLUMN apparent_age TEXT DEFAULT ''");
+  }
 }
 
 function getDb() {

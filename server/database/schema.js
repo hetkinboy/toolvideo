@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS characters (
   alias TEXT DEFAULT '',
   role TEXT DEFAULT 'npc' CHECK(role IN ('main','supporting','enemy','npc')),
   age TEXT DEFAULT '',
+  apparent_age TEXT DEFAULT '',
   gender TEXT DEFAULT '',
   height TEXT DEFAULT '',
 

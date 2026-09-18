@@ -11,6 +11,7 @@ export default function CharacterCreateModal({ onClose, onSuccess }) {
     alias: '',
     role: 'main',
     age: '18',
+    apparent_age: '',
     gender: 'Nam',
     height: '175cm',
     description: '',
@@ -134,6 +135,17 @@ export default function CharacterCreateModal({ onClose, onSuccess }) {
                   value={formData.age}
                   onChange={(e) => setFormData({ ...formData, age: e.target.value })}
                   placeholder="18"
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="label">Độ Tuổi Ngoại Hình</label>
+                <input
+                  type="text"
+                  className="input"
+                  value={formData.apparent_age}
+                  onChange={(e) => setFormData({ ...formData, apparent_age: e.target.value })}
+                  placeholder="VD: 22–25; để trống = tuổi thật"
+                  title="Dùng cho nhân vật trường sinh, tu tiên hoặc có ngoại hình khác tuổi thật"
                 />
               </div>
               <div style={{ flex: 1 }}>
