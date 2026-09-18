@@ -1,0 +1,559 @@
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { api } from '../../core/api';
+
+export default function CharacterDetail() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [character, setCharacter] = useState(null);
+  const [activeTab, setActiveTab] = useState('profile');
+  const [loading, setLoading] = useState(true);
+  const [referenceAssets, setReferenceAssets] = useState([]);
+  const [referenceUrl, setReferenceUrl] = useState('');
+  const [referenceFiles, setReferenceFiles] = useState([]);
+  const [referenceSaving, setReferenceSaving] = useState(false);
+  const [referenceError, setReferenceError] = useState('');
+  const [copiedPromptKey, setCopiedPromptKey] = useState('');
+  const [promptFiles, setPromptFiles] = useState({});
+  const [uploadingPromptKey, setUploadingPromptKey] = useState('');
+  const [previewAsset, setPreviewAsset] = useState(null);
+
+  useEffect(() => {
+    loadCharacter();
+  }, [id]);
+
+  useEffect(() => {
+    if (!previewAsset) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setPreviewAsset(null);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [previewAsset]);
+
+  const loadCharacter = async () => {
+    setLoading(true);
+    try {
+      const data = await api.getCharacterFull(id);
+      setCharacter(data);
+      try { setReferenceAssets(await api.getCharacterReferenceAssets(id)); } catch { setReferenceAssets([]); }
+    } catch (err) {
+      console.error(err);
+    }
+    setLoading(false);
+  };
+
+  if (loading || !character) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state__icon">⏳</div>
+        <div className="empty-state__title">Đang tải...</div>
+      </div>
+    );
+  }
+
+  const roleColors = {
+    main: 'var(--role-main)',
+    supporting: 'var(--role-supporting)',
+    enemy: 'var(--role-enemy)',
+    npc: 'var(--role-npc)',
+  };
+
+  const roleLabels = {
+    main: 'Nhân vật chính',
+    supporting: 'Nhân vật phụ',
+    enemy: 'Phản diện',
+    npc: 'Nhân vật quần chúng',
+  };
+
+  const statusLabels = {
+    draft: 'Bản nháp',
+    approved: 'Đã duyệt',
+    locked: 'Đã khóa',
+  };
+
+  const genderLabels = {
+    male: 'Nam',
+    female: 'Nữ',
+    other: 'Khác',
+  };
+
+  const state = character.current_state;
+
+  const addReferenceImage = async (event) => {
+    event.preventDefault();
+    if (referenceFiles.length === 0 && !referenceUrl.trim()) return;
+    setReferenceSaving(true);
+    setReferenceError('');
+    try {
+      const nextVersion = referenceAssets.reduce((max, asset) => Math.max(max, asset.version || 0), 0) + 1;
+      let createdAssets = [];
+      if (referenceFiles.length > 0) {
+        for (let index = 0; index < referenceFiles.length; index += 1) {
+          const file = referenceFiles[index];
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          const created = await api.uploadAsset({
+            project_id: character.project_id,
+            asset_type: 'image',
+            target_type: 'character',
+            target_id: character.id,
+            reference_kind: 'other',
+            filename: file.name,
+            mime_type: file.type,
+            data,
+            version: nextVersion + index,
+            status: 'approved_reference',
+          });
+          createdAssets.push(created);
+        }
+      } else {
+        const created = await api.createAsset({
+          project_id: character.project_id,
+          asset_type: 'image',
+          target_type: 'character',
+          target_id: character.id,
+          reference_kind: 'other',
+          file_path: referenceUrl.trim(),
+          thumbnail: referenceUrl.trim(),
+          version: nextVersion,
+          status: 'approved_reference',
+        });
+        createdAssets = [created];
+      }
+      setReferenceAssets((prev) => [...createdAssets.reverse(), ...prev]);
+      setReferenceUrl('');
+      setReferenceFiles([]);
+    } catch (err) {
+      setReferenceError(err.message);
+    } finally {
+      setReferenceSaving(false);
+    }
+  };
+
+  const removeReferenceImage = async (asset) => {
+    if (!window.confirm('Xóa ảnh tham chiếu này?')) return;
+    try {
+      await api.deleteAsset(asset.id);
+      setReferenceAssets((prev) => prev.filter((item) => item.id !== asset.id));
+    } catch (err) {
+      setReferenceError(err.message);
+    }
+  };
+
+  const profileFields = [
+    { label: 'Mô tả', value: character.description },
+    { label: 'Ngoại hình', value: character.appearance },
+    { label: 'Khuôn mặt', value: character.face },
+    { label: 'Tóc', value: character.hair },
+    { label: 'Mắt', value: character.eyes },
+    { label: 'Thân hình', value: character.body },
+    { label: 'Trang phục mặc định', value: character.default_outfit },
+    { label: 'Tính cách', value: character.personality },
+    { label: 'Phong cách nói', value: character.speaking_style },
+    { label: 'Lý lịch', value: character.background },
+    { label: 'Mục tiêu', value: character.goal },
+    { label: 'Động lực', value: character.motivation },
+    { label: 'Điểm mạnh', value: character.strength },
+    { label: 'Điểm yếu', value: character.weakness },
+    { label: 'Bí mật', value: character.secret, highlight: true },
+  ];
+
+  const stateFields = state ? [
+    { label: 'Vị trí hiện tại', value: state.current_location, icon: '📍' },
+    { label: 'Trang phục', value: state.current_outfit, icon: '👕' },
+    { label: 'Sức khỏe', value: state.health, icon: '❤️' },
+    { label: 'Chấn thương', value: state.injuries, icon: '🩹' },
+    { label: 'Cảm xúc', value: state.emotion, icon: '😐' },
+    { label: 'Sức mạnh', value: state.power_level, icon: '⚡' },
+    { label: 'Còn sống', value: state.alive ? 'Có' : 'Đã chết', icon: state.alive ? '✅' : '💀' },
+  ] : [];
+
+  const relLabels = {
+    friend: '🤝 Bạn bè',
+    enemy: '⚔️ Kẻ thù',
+    family: '👨‍👩‍👧 Gia đình',
+    lover: '❤️ Người yêu',
+    ally: '🤝 Đồng minh',
+    rival: '🏆 Đối thủ',
+    neutral: '➖ Trung lập',
+  };
+
+  const identityFacts = [
+    `Character: ${character.name}`,
+    character.alias && `Alias: ${character.alias}`,
+    character.age && `Age: ${character.age}`,
+    character.gender && `Gender: ${character.gender}`,
+    character.height && `Height: ${character.height}`,
+    character.face && `Face: ${character.face}`,
+    character.hair && `Hair: ${character.hair}`,
+    character.eyes && `Eyes: ${character.eyes}`,
+    character.body && `Body: ${character.body}`,
+    character.default_outfit && `Canonical outfit: ${character.default_outfit}`,
+  ].filter(Boolean).join('; ');
+
+  const referencePromptTemplates = [
+    {
+      key: 'master',
+      label: '1. Bảng mẫu tổng',
+      description: 'Tạo ảnh gốc nhiều góc để làm chuẩn nhận diện nhân vật.',
+      prompt: `Create a professional character reference sheet for the following locked identity: ${identityFacts}. Show the exact same person in a large full-body front view, a clean head-and-shoulders portrait, left 3/4 view, right 3/4 view, side/back view, and small close-up detail insets for the scar, hair, fabric, belt, jewelry, and footwear. Keep one consistent face, hairstyle, eye shape, body proportions, age, and canonical outfit in every panel. Neutral warm-gray studio background, soft even lighting, clean cinematic concept art, realistic anatomy, sharp facial details, consistent scale, no story scene. Minimal or no text, no watermark, no logo, no extra characters, no duplicate limbs, no distorted hands, no identity drift.`,
+    },
+    {
+      key: 'portrait',
+      label: '2. Chân dung cận mặt',
+      description: 'Dùng bảng mẫu tổng làm ảnh tham chiếu, chỉ tạo một chân dung sạch.',
+      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean single head-and-shoulders portrait of ${character.name}. Preserve the exact same face, facial proportions, eyes, eyebrows, nose, lips, skin tone, scar placement, hairstyle, hairline, age, and gender from the master sheet. Neutral expression, front-facing camera, soft neutral studio lighting, plain background, high-detail cinematic realism. Do not redesign the character, do not change the hairstyle, no extra accessories, no text, no watermark, no other people. Identity consistency is more important than artistic variation.`,
+    },
+    {
+      key: 'three-quarter',
+      label: '3. Góc 3/4 trái/phải',
+      description: 'Tạo góc mới nhưng khóa nguyên khuôn mặt và kiểu tóc.',
+      prompt: `Use the attached master character sheet as the only identity reference. Generate ${character.name} in a clean 3/4 view, first version facing slightly left; keep the same face, eye shape, eyebrows, nose, lips, jawline, scar placement, hairline, hairstyle, age, body proportions, and canonical outfit. This is a controlled camera-angle variation, not a redesign. Neutral background, even cinematic lighting, shoulders and upper torso visible, realistic anatomy, no text, no watermark, no extra characters, no identity drift.`,
+    },
+    {
+      key: 'full-body',
+      label: '4. Toàn thân chính diện',
+      description: 'Làm ảnh tham chiếu cho dáng người, tỷ lệ cơ thể và trang phục.',
+      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean full-body front view of ${character.name}, standing naturally from head to feet. Preserve the exact same face, hairstyle, body proportions, height impression, canonical outfit, belt, jewelry, footwear, and color palette. Show the entire silhouette clearly on a plain neutral background with soft studio lighting. No dramatic action pose, no cropped feet, no text, no watermark, no extra people, no costume redesign, no anatomy errors.`,
+    },
+    {
+      key: 'back-side',
+      label: '5. Góc nghiêng và phía sau',
+      description: 'Giúp mô hình hiểu tóc, vai, lưng và cấu trúc trang phục.',
+      prompt: `Use the attached master character sheet as the only identity reference. Create a clean rear 3/4 view of ${character.name}, with enough side profile to identify the same person. Preserve the exact same hairstyle, hair length, tied hair shape, shoulder width, body proportions, canonical outfit, belt, fabric layers, accessories, and color palette. Neutral background, soft even lighting, full upper body or full body visible, realistic cinematic concept art. No new costume, no extra characters, no text, no watermark, no identity drift.`,
+    },
+    {
+      key: 'expression',
+      label: '6. Biểu cảm nhân vật',
+      description: 'Tạo thêm ảnh biểu cảm nhưng vẫn giữ nguyên nhận diện.',
+      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean portrait of ${character.name} with a subtle serious, emotionally restrained expression suitable for a cinematic drama. Preserve the exact same face, eyes, eyebrows, scar placement, hairstyle, skin tone, age, and facial proportions. Change expression only; do not change identity, hairstyle, outfit, or age. Soft cinematic key light, plain background, realistic detail, no text, no watermark, no other people, no exaggerated facial distortion.`,
+    },
+  ];
+
+  const copyReferencePrompt = async (template) => {
+    try {
+      await navigator.clipboard.writeText(template.prompt);
+      setCopiedPromptKey(template.key);
+      window.setTimeout(() => setCopiedPromptKey(''), 1800);
+    } catch {
+      setReferenceError('Không thể sao chép câu lệnh. Bạn có thể bôi đen và sao chép thủ công.');
+    }
+  };
+
+  const referenceKindLabels = Object.fromEntries(
+    referencePromptTemplates.map((template) => [template.key, template.label])
+  );
+
+  const uploadPromptImages = async (template) => {
+    const files = promptFiles[template.key] || [];
+    if (files.length === 0) {
+      setReferenceError(`Hãy chọn ít nhất một ảnh cho mẫu “${template.label}”.`);
+      return;
+    }
+
+    setUploadingPromptKey(template.key);
+    setReferenceError('');
+    try {
+      const nextVersion = referenceAssets.reduce((max, asset) => Math.max(max, asset.version || 0), 0) + 1;
+      const createdAssets = [];
+
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        const created = await api.uploadAsset({
+          project_id: character.project_id,
+          asset_type: 'image',
+          target_type: 'character',
+          target_id: character.id,
+          reference_kind: template.key,
+          filename: `${template.key}-${file.name}`,
+          mime_type: file.type,
+          data,
+          version: nextVersion + index,
+          status: 'approved_reference',
+        });
+        createdAssets.push(created);
+      }
+
+      setReferenceAssets((prev) => [...createdAssets.reverse(), ...prev]);
+      setPromptFiles((prev) => ({ ...prev, [template.key]: [] }));
+    } catch (err) {
+      setReferenceError(err.message);
+    } finally {
+      setUploadingPromptKey('');
+    }
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ marginBottom: 'var(--space-6)' }}>
+        <button className="btn btn--ghost btn--sm" onClick={() => navigate('/characters')} style={{ marginBottom: 'var(--space-3)' }}>
+          ← Quay lại
+        </button>
+
+        <div className="flex items-center gap-4">
+          <div style={{
+            width: 72, height: 72,
+            borderRadius: 'var(--radius-xl)',
+            background: `linear-gradient(135deg, ${roleColors[character.role]}22, ${roleColors[character.role]}44)`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 'var(--text-2xl)', fontWeight: 700,
+            color: roleColors[character.role],
+          }}>
+            {character.name.split(' ').map(w => w[0]).join('').slice(0, 2)}
+          </div>
+          <div>
+            <h1 className="page-header__title">{character.name}</h1>
+            <div className="flex items-center gap-3 mt-2">
+              {character.alias && <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>"{character.alias}"</span>}
+              <span style={{ color: roleColors[character.role], fontSize: 'var(--text-xs)', fontWeight: 600, textTransform: 'uppercase' }}>{roleLabels[character.role] || character.role}</span>
+              <span className={`canon-badge canon-badge--${character.status}`}>{statusLabels[character.status] || character.status}</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>{character.age} · {genderLabels[character.gender] || character.gender} · {character.height}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs mb-6">
+        {[
+          { key: 'profile', label: '📋 Hồ sơ' },
+          { key: 'reference', label: '🖼️ Bộ ảnh tham chiếu' },
+          { key: 'state', label: '🔄 Trạng thái hiện tại' },
+          { key: 'relationships', label: '🤝 Quan hệ' },
+        ].map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${activeTab === t.key ? 'tab--active' : ''}`}
+            onClick={() => setActiveTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Profile Tab */}
+      {activeTab === 'profile' && (
+        <div className="flex flex-col gap-3">
+          {profileFields.filter(f => f.value).map((field) => (
+            <div key={field.label} className="card" style={{
+              padding: 'var(--space-3) var(--space-4)',
+              borderColor: field.highlight ? 'rgba(239, 68, 68, 0.2)' : undefined,
+              background: field.highlight ? 'rgba(239, 68, 68, 0.04)' : undefined,
+            }}>
+              <div className="label" style={{ marginBottom: 'var(--space-1)' }}>{field.label}</div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', lineHeight: 'var(--leading-relaxed)', whiteSpace: 'pre-wrap' }}>
+                {field.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Character Reference Pack */}
+      {activeTab === 'reference' && (
+        <div>
+          <div className="card" style={{ marginBottom: 'var(--space-5)', background: 'linear-gradient(135deg, rgba(99,102,241,.12), rgba(168,85,247,.06))' }}>
+            <div className="flex items-center justify-between">
+              <div><h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 700 }}>🔒 Khóa nhận diện nhân vật</h2><p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)', marginTop: 'var(--space-2)' }}>Các cảnh quay sẽ dùng gói này để giữ khuôn mặt, tóc, mắt, vóc dáng và trang phục ổn định.</p></div>
+              <span className="badge badge--success">{referenceAssets.length} ảnh tham chiếu</span>
+            </div>
+            <div style={{ marginTop: 'var(--space-4)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+              {character.name}: khuôn mặt={character.face || character.appearance || 'giữ khuôn mặt nhất quán'}, tóc={character.hair || 'giữ kiểu tóc nhất quán'}, mắt={character.eyes || 'giữ đôi mắt nhất quán'}, vóc dáng={character.body || 'giữ vóc dáng nhất quán'}, trang phục={character.default_outfit || 'trang phục đặc trưng'}
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 'var(--space-5)' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 700 }}>Câu lệnh tạo bộ ảnh tham chiếu</h2>
+                <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)', marginTop: 'var(--space-2)' }}>
+                  Sao chép câu lệnh số 1 để tạo bảng mẫu tổng. Sau đó đính kèm bảng mẫu tổng vào câu lệnh số 2–6 để tạo các góc bổ sung.
+                </p>
+              </div>
+              <span className="badge badge--info">6 mẫu câu lệnh</span>
+            </div>
+            <div className="grid grid--2" style={{ marginTop: 'var(--space-4)' }}>
+              {referencePromptTemplates.map((template) => (
+                <div key={template.key} className="card" style={{ padding: 'var(--space-3)', background: 'var(--bg-secondary)' }}>
+                  <div style={{ fontWeight: 700, fontSize: 'var(--text-sm)' }}>{template.label}</div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', margin: 'var(--space-1) 0 var(--space-2)' }}>{template.description}</div>
+                  <textarea className="input" rows={8} value={template.prompt} readOnly style={{ resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: 1.5 }} />
+                  <div className="flex gap-2" style={{ marginTop: 'var(--space-2)' }}>
+                    <button className="btn btn--secondary btn--sm" type="button" onClick={() => copyReferencePrompt(template)}>
+                      {copiedPromptKey === template.key ? 'Đã sao chép' : 'Sao chép câu lệnh'}
+                    </button>
+                    <label className="btn btn--ghost btn--sm" style={{ cursor: 'pointer', flex: 1, textAlign: 'center' }}>
+                      Chọn ảnh
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        style={{ display: 'none' }}
+                        onChange={(event) => setPromptFiles((prev) => ({ ...prev, [template.key]: Array.from(event.target.files || []) }))}
+                      />
+                    </label>
+                  </div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)', minHeight: 18 }}>
+                    {(promptFiles[template.key] || []).length > 0
+                      ? `Đã chọn ${(promptFiles[template.key] || []).length} ảnh`
+                      : 'Chọn ảnh kết quả đúng với mẫu này'}
+                  </div>
+                  <button className="btn btn--primary btn--sm" type="button" disabled={uploadingPromptKey === template.key || !(promptFiles[template.key] || []).length} onClick={() => uploadPromptImages(template)} style={{ marginTop: 'var(--space-1)', width: '100%' }}>
+                    {uploadingPromptKey === template.key ? 'Đang tải lên...' : `Tải ảnh vào “${template.label}”`}
+                  </button>
+                  {referenceAssets.some((asset) => asset.reference_kind === template.key) && (
+                    <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--border-subtle)' }}>
+                      <div style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-xs)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
+                        Ảnh đã tải ({referenceAssets.filter((asset) => asset.reference_kind === template.key).length}) — nhấn để xem lớn
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+                        {referenceAssets.filter((asset) => asset.reference_kind === template.key).map((asset) => (
+                          <button
+                            key={asset.id}
+                            type="button"
+                            title={`Xem lớn ${template.label}`}
+                            onClick={() => setPreviewAsset(asset)}
+                            style={{ width: 72, height: 72, padding: 0, border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--bg-tertiary)', cursor: 'zoom-in' }}
+                          >
+                            <img src={asset.thumbnail || asset.file_path} alt={`${template.label} - ${character.name}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <form className="card" onSubmit={addReferenceImage} style={{ marginBottom: 'var(--space-5)' }}>
+            <div className="label">Tải ảnh chưa phân loại (tùy chọn)</div>
+            <div className="flex gap-2">
+              <input className="input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => setReferenceFiles(Array.from(e.target.files || []))} />
+              <button className="btn btn--primary" type="submit" disabled={referenceSaving}>{referenceSaving ? 'Đang tải lên...' : '⬆ Tải ảnh lên'}</button>
+            </div>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>Dùng mục này cho ảnh bổ sung chưa thuộc mẫu nào. Ảnh theo từng mẫu nên được tải lên ngay trong thẻ câu lệnh tương ứng.</div>
+            <input className="input" style={{ marginTop: 'var(--space-2)' }} value={referenceUrl} onChange={(e) => setReferenceUrl(e.target.value)} placeholder="Đường dẫn công khai (tùy chọn)" />
+            {referenceError && <div style={{ color: 'var(--color-error)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-2)' }}>{referenceError}</div>}
+          </form>
+
+          {referenceAssets.length === 0 ? <div className="empty-state card"><div className="empty-state__icon">🖼️</div><div className="empty-state__title">Chưa có ảnh tham chiếu</div><div className="empty-state__desc">Thêm bảng mẫu tổng và các ảnh theo từng mẫu để cảnh quay giữ đúng nhận diện nhân vật.</div></div> : <div className="grid grid--3">{referenceAssets.map((asset) => <div key={asset.id} className="card" style={{ padding: 'var(--space-3)' }}><div style={{ height: 150, borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{asset.thumbnail && /^https?:\/\//.test(asset.thumbnail) ? <img src={asset.thumbnail} alt={`Ảnh tham chiếu ${character.name}`} title="Nhấn để xem ảnh lớn" onClick={() => setPreviewAsset(asset)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' }} /> : <span style={{ fontSize: 36 }}>🖼️</span>}</div><div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--accent-primary)' }}>{referenceKindLabels[asset.reference_kind] || 'Ảnh tham chiếu khác'}</div><div style={{ marginTop: 'var(--space-1)', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>{asset.file_path}</div><div className="flex items-center justify-between" style={{ marginTop: 'var(--space-2)' }}><span className="badge badge--success">v{asset.version || 1}</span><button className="btn btn--ghost btn--sm" style={{ color: 'var(--color-error)' }} onClick={() => removeReferenceImage(asset)}>Xóa</button></div></div>)}</div>}
+        </div>
+      )}
+
+      {/* State Tab */}
+      {activeTab === 'state' && (
+        <div>
+          {state ? (
+            <div className="grid grid--2">
+              {stateFields.map((field) => (
+                <div key={field.label} className="card" style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                  <div className="flex items-center gap-2">
+                    <span>{field.icon}</span>
+                    <span className="label" style={{ marginBottom: 0 }}>{field.label}</span>
+                  </div>
+                  <div style={{
+                    fontSize: 'var(--text-md)', color: 'var(--text-primary)',
+                    fontWeight: 500, marginTop: 'var(--space-2)',
+                  }}>
+                    {field.value || '—'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <div className="empty-state__icon">🔄</div>
+              <div className="empty-state__title">Chưa có trạng thái</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Relationships Tab */}
+      {activeTab === 'relationships' && (
+        <div className="flex flex-col gap-2">
+          {character.relationships?.length > 0 ? character.relationships.map((rel) => (
+            <div key={rel.id} className="card card--clickable" style={{ padding: 'var(--space-3) var(--space-4)' }}
+              onClick={() => navigate(`/characters/${rel.target_character_id}`)}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span style={{ fontSize: 'var(--text-md)' }}>{relLabels[rel.relationship_type]?.split(' ')[0]}</span>
+                  <div>
+                    <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {rel.target_name}
+                    </div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                      {rel.description}
+                    </div>
+                  </div>
+                </div>
+                <div style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--text-sm)',
+                  fontWeight: 600,
+                  color: rel.relationship_value > 0 ? 'var(--color-success)' : rel.relationship_value < 0 ? 'var(--color-error)' : 'var(--text-muted)',
+                }}>
+                  {rel.relationship_value > 0 ? '+' : ''}{rel.relationship_value}
+                </div>
+              </div>
+            </div>
+          )) : (
+            <div className="empty-state">
+              <div className="empty-state__icon">🤝</div>
+              <div className="empty-state__title">Chưa có quan hệ</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {previewAsset && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Xem ảnh tham chiếu"
+          onClick={() => setPreviewAsset(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)', background: 'rgba(0, 0, 0, 0.88)', backdropFilter: 'blur(6px)', cursor: 'zoom-out' }}
+        >
+          <div onClick={(event) => event.stopPropagation()} style={{ position: 'relative', maxWidth: '94vw', maxHeight: '94vh', cursor: 'default' }}>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              aria-label="Đóng ảnh"
+              onClick={() => setPreviewAsset(null)}
+              style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, width: 38, height: 38, padding: 0, borderRadius: '50%', fontSize: 20 }}
+            >
+              ×
+            </button>
+            <img
+              src={previewAsset.thumbnail || previewAsset.file_path}
+              alt={`Ảnh lớn ${referenceKindLabels[previewAsset.reference_kind] || character.name}`}
+              style={{ display: 'block', maxWidth: '94vw', maxHeight: '86vh', objectFit: 'contain', borderRadius: 'var(--radius-lg)', boxShadow: '0 24px 80px rgba(0,0,0,.55)' }}
+            />
+            <div style={{ marginTop: 'var(--space-2)', color: '#fff', textAlign: 'center', fontSize: 'var(--text-sm)', fontWeight: 600 }}>
+              {referenceKindLabels[previewAsset.reference_kind] || 'Ảnh tham chiếu khác'} — nhấn bên ngoài hoặc phím Esc để đóng
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
