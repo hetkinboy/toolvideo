@@ -201,24 +201,35 @@ export default function CharacterDetail() {
     character.default_outfit && `Canonical outfit: ${character.default_outfit}`,
   ].filter(Boolean).join('; ');
 
+  const identitySource = [character.appearance, character.face, character.description]
+    .filter(Boolean)
+    .join(' ');
+  const hasScar = /\bscar\b|sẹo/i.test(identitySource);
+  const scarConsistencyInstruction = hasScar
+    ? 'Preserve the exact scar described in the character profile, including its position, size, and shape. Do not add any other scars.'
+    : 'Do not add scars or facial wounds. Preserve only facial marks explicitly described in the character profile.';
+  const masterDetailSubjects = hasScar
+    ? 'the explicitly described scar, hair, fabric, belt, jewelry, and footwear'
+    : 'the eyes, hair, fabric, belt, jewelry, and footwear';
+
   const referencePromptTemplates = [
     {
       key: 'master',
       label: '1. Bảng mẫu tổng',
       description: 'Tạo ảnh gốc nhiều góc để làm chuẩn nhận diện nhân vật.',
-      prompt: `Create a professional character reference sheet for the following locked identity: ${identityFacts}. Show the exact same person in a large full-body front view, a clean head-and-shoulders portrait, left 3/4 view, right 3/4 view, side/back view, and small close-up detail insets for the scar, hair, fabric, belt, jewelry, and footwear. Keep one consistent face, hairstyle, eye shape, body proportions, age, and canonical outfit in every panel. Neutral warm-gray studio background, soft even lighting, clean cinematic concept art, realistic anatomy, sharp facial details, consistent scale, no story scene. Minimal or no text, no watermark, no logo, no extra characters, no duplicate limbs, no distorted hands, no identity drift.`,
+      prompt: `Create a professional character reference sheet for the following locked identity: ${identityFacts}. Show the exact same person in a large full-body front view, a clean head-and-shoulders portrait, left 3/4 view, right 3/4 view, side/back view, and small close-up detail insets for ${masterDetailSubjects}. Keep one consistent face, hairstyle, eye shape, body proportions, age, and canonical outfit in every panel. ${scarConsistencyInstruction} Neutral warm-gray studio background, soft even lighting, clean cinematic concept art, realistic anatomy, sharp facial details, consistent scale, no story scene. Minimal or no text, no watermark, no logo, no extra characters, no duplicate limbs, no distorted hands, no identity drift.`,
     },
     {
       key: 'portrait',
       label: '2. Chân dung cận mặt',
       description: 'Dùng bảng mẫu tổng làm ảnh tham chiếu, chỉ tạo một chân dung sạch.',
-      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean single head-and-shoulders portrait of ${character.name}. Preserve the exact same face, facial proportions, eyes, eyebrows, nose, lips, skin tone, scar placement, hairstyle, hairline, age, and gender from the master sheet. Neutral expression, front-facing camera, soft neutral studio lighting, plain background, high-detail cinematic realism. Do not redesign the character, do not change the hairstyle, no extra accessories, no text, no watermark, no other people. Identity consistency is more important than artistic variation.`,
+      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean single head-and-shoulders portrait of ${character.name}. Preserve the exact same face, facial proportions, eyes, eyebrows, nose, lips, skin tone, hairstyle, hairline, age, and gender from the master sheet. ${scarConsistencyInstruction} Neutral expression, front-facing camera, soft neutral studio lighting, plain background, high-detail cinematic realism. Do not redesign the character, do not change the hairstyle, no extra accessories, no text, no watermark, no other people. Identity consistency is more important than artistic variation.`,
     },
     {
       key: 'three-quarter',
       label: '3. Góc 3/4 trái/phải',
       description: 'Tạo góc mới nhưng khóa nguyên khuôn mặt và kiểu tóc.',
-      prompt: `Use the attached master character sheet as the only identity reference. Generate ${character.name} in a clean 3/4 view, first version facing slightly left; keep the same face, eye shape, eyebrows, nose, lips, jawline, scar placement, hairline, hairstyle, age, body proportions, and canonical outfit. This is a controlled camera-angle variation, not a redesign. Neutral background, even cinematic lighting, shoulders and upper torso visible, realistic anatomy, no text, no watermark, no extra characters, no identity drift.`,
+      prompt: `Use the attached master character sheet as the only identity reference. Generate ${character.name} in a clean 3/4 view, first version facing slightly left; keep the same face, eye shape, eyebrows, nose, lips, jawline, hairline, hairstyle, age, body proportions, and canonical outfit. ${scarConsistencyInstruction} This is a controlled camera-angle variation, not a redesign. Neutral background, even cinematic lighting, shoulders and upper torso visible, realistic anatomy, no text, no watermark, no extra characters, no identity drift.`,
     },
     {
       key: 'full-body',
@@ -236,7 +247,7 @@ export default function CharacterDetail() {
       key: 'expression',
       label: '6. Biểu cảm nhân vật',
       description: 'Tạo thêm ảnh biểu cảm nhưng vẫn giữ nguyên nhận diện.',
-      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean portrait of ${character.name} with a subtle serious, emotionally restrained expression suitable for a cinematic drama. Preserve the exact same face, eyes, eyebrows, scar placement, hairstyle, skin tone, age, and facial proportions. Change expression only; do not change identity, hairstyle, outfit, or age. Soft cinematic key light, plain background, realistic detail, no text, no watermark, no other people, no exaggerated facial distortion.`,
+      prompt: `Use the attached master character sheet as the primary identity reference. Create a clean portrait of ${character.name} with a subtle serious, emotionally restrained expression suitable for a cinematic drama. Preserve the exact same face, eyes, eyebrows, hairstyle, skin tone, age, and facial proportions. ${scarConsistencyInstruction} Change expression only; do not change identity, hairstyle, outfit, or age. Soft cinematic key light, plain background, realistic detail, no text, no watermark, no other people, no exaggerated facial distortion.`,
     },
   ];
 
