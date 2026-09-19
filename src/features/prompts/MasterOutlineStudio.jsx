@@ -20,6 +20,7 @@ export default function MasterOutlineStudio() {
   const [expandSeason, setExpandSeason] = useState(true);
   const [storyPremise, setStoryPremise] = useState('');
   const [pacing, setPacing] = useState('fast'); // fast for TikTok, moderate for YouTube
+  const [durationProfile, setDurationProfile] = useState('adaptive');
   const [masterPrompt, setMasterPrompt] = useState('');
   const [copied, setCopied] = useState(false);
 
@@ -30,6 +31,7 @@ export default function MasterOutlineStudio() {
   const [importSuccess, setImportSuccess] = useState(null);
   const [parseError, setParseError] = useState('');
   const [replaceExisting, setReplaceExisting] = useState(true);
+  const [wardrobeOnly, setWardrobeOnly] = useState(false);
 
   // Auto initialize prompt on project change
   useEffect(() => {
@@ -39,7 +41,7 @@ export default function MasterOutlineStudio() {
       }
       buildMasterPrompt();
     }
-  }, [currentProject, numEpisodes, expandSeason, storyPremise, pacing]);
+  }, [currentProject, numEpisodes, expandSeason, storyPremise, pacing, durationProfile]);
 
   // Build the Super Master Outline Prompt
   const buildMasterPrompt = () => {
@@ -49,6 +51,13 @@ export default function MasterOutlineStudio() {
     const aspectRatio = currentProject.aspect_ratio || '9:16';
     const genre = currentProject.genre || 'Chinese Fantasy / Action / Cultivation';
     const tone = currentProject.story_tone || 'Tense + Dramatic + Underdog Rising';
+    const durationPolicies = {
+      adaptive: 'Mỗi tập tự chọn trong khoảng 120–300 giây theo lượng thông tin; không nhồi nội dung và tự đánh dấu điểm tách tập.',
+      short: 'Mỗi tập 90–120 giây; chỉ dùng cho hook, biến cố hoặc cliffhanger đơn.',
+      deep: 'Mỗi tập 180–300 giây; ưu tiên chiều sâu nhân vật, giải thích thế giới và diễn biến rõ ràng.',
+      cinematic: 'Mỗi tập 240–480 giây; cho phép nhiều phân đoạn tâm lý, hành động và chuyển cảnh điện ảnh.',
+    };
+    const durationPolicy = durationPolicies[durationProfile] || durationPolicies.adaptive;
 
     const expandSection = expandSeason
       ? `## YÊU CẦU MỞ RỘNG PHẦN TIẾP THEO (EXPANDABLE SEASON ARCHITECTURE):
@@ -64,7 +73,7 @@ Nhiệm vụ của bạn là LẬP DÀN Ý TOÀN BỘ CỐT TRUYỆN (MASTER OUT
 - Tên Dự Án: "${currentProject.name}"
 - Thể Loại: ${genre}
 - Tông Giọng: ${tone}
-- Định Dạng: Phim ngắn ${platform} (${aspectRatio}), thời lượng mỗi tập 90-120 giây, nhịp phim dồn dập, giật gân, cao trào liên tục.
+- Định Dạng: Phim ngắn ${platform} (${aspectRatio}), ${durationPolicy} Nhịp phim phải phục vụ nội dung, không cắt mất thông tin quan trọng.
 - Tiền Đề / Ý Tưởng Mở Đầu: ${storyPremise || 'Một thiếu niên bị coi là phế vật vô tình đạt được cơ duyên nghịch thiên, bắt đầu hành trình nghịch tập báo thù và bảo vệ người thân.'}
 - Quy Mô: Toàn bộ ${numEpisodes} tập phim liên hoàn.
 
@@ -114,6 +123,17 @@ ${expandSection}
       "personality": "Tự phụ, độc ác",
       "goal": "Chiếm đoạt bảo vật, tiêu diệt nhân vật chính",
       "secret": "Giao dịch bí mật với thế lực hắc ám"
+    }
+  ],
+  "outfits": [
+    {
+      "character_name": "Character owner",
+      "name": "Named outfit for a period or context",
+      "era": "modern / ancient / battle / everyday",
+      "description": "Detailed clothing, material, colors, shoes and accessories",
+      "visual_prompt": "Detailed English outfit prompt for image generation",
+      "tags": "keywords used to auto-detect this outfit in scenes",
+      "is_default": false
     }
   ],
   "locations": [
@@ -205,6 +225,12 @@ ${expandSection}
       "main_conflict": "Sự áp bức của kẻ thù đối diện với thời khắc sinh tử",
       "climax": "Kích hoạt cơ duyên bí ẩn ngay khoảnh khắc hiểm nghèo",
       "ending_hook": "Cliffhanger kết tập khiến người xem phải bấm xem tiếp ngay",
+      "duration_target": 180,
+      "duration_min": 120,
+      "duration_max": 300,
+      "content_density": "adaptive",
+      "word_budget": 420,
+      "duration_notes": "Ghi rõ điểm cần tách nếu vượt giới hạn",
       "scenes": [
         {
           "scene_number": 1,
@@ -212,7 +238,8 @@ ${expandSection}
           "purpose": "Thiết lập tình cảnh bi đát và sự bất công",
           "action": "Nhân vật chính bị ép quỳ gối, đối thủ giẫm đạp ngọc bội gia truyền",
           "dialogue": "Ngươi chỉ là một tên phế vật, còn dám mơ tưởng cưới tiểu thư?",
-          "emotion_change": "Uất hận ➔ Lãnh đạm quyết tuyệt"
+          "emotion_change": "Uất hận ➔ Lãnh đạm quyết tuyệt",
+          "character_appearances": [{ "character_name": "Character name", "outfit_name": "Named outfit from outfits", "reference_mode": "identity_outfit", "notes": "scene variation" }]
         },
         {
           "scene_number": 2,
@@ -304,7 +331,8 @@ Hãy viết thật chi tiết, đầy đủ toàn bộ ${numEpisodes} tập vớ
     try {
       const res = await api.importMasterOutline(currentProject.id, {
         ...parsedPreview.data,
-        replaceExisting
+        replaceExisting,
+        wardrobeOnly
       });
 
       // Cascading reload store
@@ -397,6 +425,17 @@ Hãy viết thật chi tiết, đầy đủ toàn bộ ${numEpisodes} tập vớ
                 <option value="cinematic">Điện ảnh, nhiều phân đoạn tâm lý</option>
               </select>
             </div>
+          </div>
+
+          <div style={{ marginTop: 'var(--space-3)' }}>
+            <label className="label">Chiến lược thời lượng mỗi tập</label>
+            <select className="select" value={durationProfile} onChange={(e) => setDurationProfile(e.target.value)}>
+              <option value="adaptive">Linh hoạt 120–300 giây — khuyến nghị cho truyện dài</option>
+              <option value="short">Ngắn 90–120 giây — hook và biến cố nhanh</option>
+              <option value="deep">Chiều sâu 180–300 giây — phát triển nhân vật/thế giới</option>
+              <option value="cinematic">Điện ảnh 240–480 giây — nhiều phân đoạn và tâm lý</option>
+            </select>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>AI sẽ tự chọn thời lượng từng Episode dựa trên lượng thông tin và đánh dấu nơi nên tách tập.</div>
           </div>
 
           {/* Expand Season Checkbox */}
@@ -548,6 +587,7 @@ Hãy viết thật chi tiết, đầy đủ toàn bộ ${numEpisodes} tập vớ
                   <li>{importSuccess.locationsCount} Địa điểm & Bối cảnh</li>
                   <li>{importSuccess.episodesCount} Tập phim</li>
                   <li>{importSuccess.scenesCount} Cảnh quay chi tiết</li>
+                  <li>{importSuccess.outfitsCount || 0} Outfit records / kho trang phuc</li>
                 </ul>
               </div>
               <div className="flex gap-2 mt-2">
@@ -661,6 +701,11 @@ Hãy viết thật chi tiết, đầy đủ toàn bộ ${numEpisodes} tập vớ
                   <strong>Làm sạch & Ghi đè dàn ý cũ</strong> (Khuyến nghị: chống trùng lặp tên nhân vật, tập phim)
                 </label>
               </div>
+
+              <label>
+                <input type="checkbox" checked={wardrobeOnly} onChange={(e) => { setWardrobeOnly(e.target.checked); if (e.target.checked) setReplaceExisting(false); }} />
+                Ch&#7881; c&#7853;p nh&#7853;t kho trang ph&#7909;c (gi&#7919; nguy&#234;n Scene c&#361;)
+              </label>
 
               <div className="pt-2">
                 <button

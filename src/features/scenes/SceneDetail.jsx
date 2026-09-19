@@ -25,6 +25,13 @@ export default function SceneDetail() {
   const [parsedAiData, setParsedAiData] = useState(null);
   const [panelMessage, setPanelMessage] = useState('');
   const [identityPack, setIdentityPack] = useState({ characters: [], references: [], identity_lock: '' });
+  const [projectAssets, setProjectAssets] = useState([]);
+  const [outfitLibrary, setOutfitLibrary] = useState([]);
+  const [continuityResult, setContinuityResult] = useState(null);
+  const [autoLinking, setAutoLinking] = useState(false);
+  const [autoLinkReport, setAutoLinkReport] = useState(null);
+  const [referenceGallery, setReferenceGallery] = useState(null);
+  const [copyingReferenceGroup, setCopyingReferenceGroup] = useState('');
   const setSaveStatus = useStore((s) => s.setSaveStatus);
   const currentProject = useStore((s) => s.currentProject);
 
@@ -50,11 +57,23 @@ export default function SceneDetail() {
   const loadScene = async () => {
     setLoading(true);
     try {
-      const s = await api.getScene(id);
+      let s = await api.getScene(id);
+      const hasLinkedEntities = ['character_ids', 'item_ids', 'story_thread_ids'].some((field) => {
+        try { return JSON.parse(s[field] || '[]').length > 0; } catch { return false; }
+      });
+      if (!hasLinkedEntities && s.status !== 'locked') {
+        try {
+          const linked = await api.autoLinkScene(id, { replace: false });
+          s = linked.scene;
+          setAutoLinkReport(linked.detected);
+        } catch { }
+      }
       setScene(s);
       setEditData(s);
       try { setShots(await api.getSceneShots(id)); } catch { setShots([]); }
       try { setIdentityPack(await api.getSceneIdentityPack(id)); } catch { setIdentityPack({ characters: [], references: [], identity_lock: '' }); }
+      try { setProjectAssets(currentProject?.id ? await api.getAssets(currentProject.id) : []); } catch { setProjectAssets([]); }
+      try { setOutfitLibrary(currentProject?.id ? await api.getOutfits(currentProject.id) : []); } catch { setOutfitLibrary([]); }
       if (s.episode_id) {
         const ep = await api.getEpisode(s.episode_id);
         setEpisode(ep);
@@ -76,6 +95,8 @@ export default function SceneDetail() {
     try {
       const updated = await api.updateScene(id, editData);
       setScene(updated);
+      setEditData(updated);
+      try { setIdentityPack(await api.getSceneIdentityPack(id)); } catch { }
       setSaveStatus('saved');
     } catch (err) {
       setSaveStatus('error');
@@ -83,6 +104,19 @@ export default function SceneDetail() {
   };
 
   const handleApprove = async () => {
+    if (!continuityResult) {
+      setPanelTab('continuity');
+      setShowContinuityModal(true);
+      setPanelMessage('Hãy chạy Continuity Check trước khi Approve Scene.');
+      return;
+    }
+    if (!continuityResult.valid) {
+      setPanelTab('continuity');
+      setShowContinuityModal(true);
+      setPanelMessage('Scene còn Blocker Continuity, chưa thể Approve.');
+      return;
+    }
+    if (!continuityResult.ready && !window.confirm('Scene còn Warning. Bạn vẫn muốn Approve sau khi đã xem lại không?')) return;
     if (window.confirm('Approve scene này? Nội dung sẽ được sử dụng làm Canon và tự động lưu Story State Snapshot.')) {
       setSaveStatus('saving');
       try {
@@ -115,13 +149,71 @@ export default function SceneDetail() {
     }
   };
 
+  const handleUnlock = async () => {
+    if (!window.confirm('🔓 Mở khóa Scene này? Scene sẽ trở về trạng thái Approved và có thể chỉnh sửa lại.')) return;
+    setSaveStatus('saving');
+    try {
+      const updated = await api.updateScene(id, { ...editData, status: 'approved' });
+      setScene(updated);
+      setEditData(updated);
+      setContinuityResult(null);
+      setPanelMessage('Scene đã được mở khóa và trở về trạng thái Approved.');
+      setSaveStatus('saved');
+    } catch (err) {
+      setPanelMessage('Không thể mở khóa Scene: ' + err.message);
+      setSaveStatus('error');
+    }
+  };
+
+  const handleAutoLink = async () => {
+    setAutoLinking(true);
+    try {
+      const result = await api.autoLinkScene(id, { replace: true });
+      setScene(result.scene);
+      setEditData(result.scene);
+      setAutoLinkReport(result.detected);
+      try { setIdentityPack(await api.getSceneIdentityPack(id)); } catch { }
+      const count = result.detected.characters.length + result.detected.items.length + result.detected.story_threads.length;
+      setPanelMessage(`Đã đọc lại kịch bản và tự liên kết ${count} đối tượng${result.detected.locations.length ? ', cùng địa điểm' : ''}.`);
+      setContinuityResult(null);
+    } catch (err) {
+      setPanelMessage('Không thể tự nhận diện Scene: ' + err.message);
+    }
+    setAutoLinking(false);
+  };
+
   const updateField = (field, value) => {
     setEditData((prev) => ({ ...prev, [field]: value }));
+    setContinuityResult(null);
   };
 
   const parseArray = (raw) => {
     if (Array.isArray(raw)) return raw;
     try { return JSON.parse(raw || '[]'); } catch { return []; }
+  };
+
+  const parseObject = (raw) => {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+    try { return JSON.parse(raw || '{}') || {}; } catch { return {}; }
+  };
+
+  const updateCharacterAppearance = (characterId, patch) => {
+    const appearances = parseObject(editData.character_appearances);
+    updateField('character_appearances', JSON.stringify({
+      ...appearances,
+      [characterId]: { ...(appearances[characterId] || {}), ...patch },
+    }));
+  };
+
+  const getCharacterAppearance = (characterId) => {
+    const saved = parseObject(editData.character_appearances)[characterId] || {};
+    const defaultOutfit = outfitLibrary.find((outfit) => outfit.character_id === characterId && outfit.is_default);
+    return { reference_mode: 'identity_outfit', ...saved, outfit_id: saved.outfit_id || defaultOutfit?.id || '' };
+  };
+
+  const getSelectedOutfit = (characterId) => {
+    const appearance = getCharacterAppearance(characterId);
+    return outfitLibrary.find((outfit) => outfit.id === appearance.outfit_id && outfit.character_id === characterId) || null;
   };
 
   const toggleArrayItem = (field, itemId) => {
@@ -130,24 +222,91 @@ export default function SceneDetail() {
     updateField(field, JSON.stringify(updated));
   };
 
-  const buildSceneVisualPrompt = () => {
-    const selectedChars = characters.filter((c) => parseArray(editData.character_ids).includes(c.id));
-    const selectedLoc = locations.find((l) => l.id === editData.location_id);
+  const selectedCharactersForPrompt = () => characters.filter((character) => parseArray(editData.character_ids).includes(character.id));
+  const selectedItemsForPrompt = () => items.filter((item) => parseArray(editData.item_ids).includes(item.id));
+  const selectedLocationForPrompt = () => locations.find((candidate) => candidate.id === editData.location_id) || (location?.id === editData.location_id ? location : null);
+
+  const buildCharacterPrompt = () => {
+    const selectedChars = selectedCharactersForPrompt();
+    const characterLines = selectedChars.map((character) => {
+      const appearance = getCharacterAppearance(character.id);
+      const outfit = getSelectedOutfit(character.id);
+      const identity = [
+        character.name,
+        character.apparent_age ? 'visual age=' + character.apparent_age : character.age ? 'age=' + character.age : '',
+        character.appearance ? 'appearance=' + character.appearance : '',
+        character.face ? 'face=' + character.face : '',
+        character.hair ? 'hair=' + character.hair : '',
+        character.eyes ? 'eyes=' + character.eyes : '',
+        character.body ? 'body=' + character.body : '',
+      ].filter(Boolean).join(', ');
+      const wardrobe = outfit
+        ? 'SCENE OUTFIT=' + outfit.name + ': ' + (outfit.visual_prompt || outfit.description || outfit.era)
+        : 'SCENE OUTFIT=UNRESOLVED — choose a named outfit from the character wardrobe before generation';
+      const notes = appearance.notes ? 'Scene appearance notes=' + appearance.notes : '';
+      return [identity, wardrobe, notes, 'Reference mode=' + appearance.reference_mode].filter(Boolean).join('\n');
+    });
+    return [
+      'Character identity and wardrobe prompt for this scene:',
+      characterLines.join('\n\n'),
+      identityPack.identity_lock || '',
+      'CRITICAL WARDROBE RULE: identity reference images lock face, hair, apparent age and body only. Never copy clothing from identity references.',
+      'The named SCENE OUTFIT overrides default_outfit and all clothing visible in identity reference images.',
+    ].filter(Boolean).join('\n');
+  };
+
+  const buildImagePrompt = () => {
+    const selectedChars = selectedCharactersForPrompt();
+    const selectedItems = selectedItemsForPrompt();
+    const selectedLoc = selectedLocationForPrompt();
     const ar = currentProject?.aspect_ratio || '9:16';
     const visualStyle = currentProject?.visual_style || 'cinematic anime, highly detailed, dramatic lighting';
-    const charTokens = selectedChars.map((c) => `${c.name}: ${c.appearance || 'detailed face and eyes'}, wearing ${c.default_outfit || 'signature outfit'}`).join('; ');
-    const locToken = selectedLoc ? (selectedLoc.visual_prompt || `${selectedLoc.name}, ${selectedLoc.architecture || ''}, ${selectedLoc.lighting || 'cinematic lighting'}`) : '';
+    const charTokens = selectedChars.map((character) => {
+      const appearance = getCharacterAppearance(character.id);
+      const outfit = getSelectedOutfit(character.id);
+      return [
+        character.name + ': ' + (character.appearance || 'preserve exact facial identity and body proportions'),
+        outfit ? 'wearing named outfit “' + outfit.name + '”: ' + (outfit.visual_prompt || outfit.description || outfit.era) : 'outfit unresolved — do not infer clothing from identity reference',
+        appearance.notes || '',
+      ].filter(Boolean).join(', ');
+    }).join('; ');
+    const itemTokens = selectedItems.map((item) => item.name + (item.description ? ': ' + item.description : '')).join('; ');
+    const locToken = selectedLoc ? (selectedLoc.visual_prompt || selectedLoc.name + ', ' + (selectedLoc.architecture || '') + ', ' + (selectedLoc.lighting || 'cinematic lighting')) : '';
     return [
       visualStyle,
-      locToken ? `Environment: ${locToken}` : '',
-      charTokens ? `Characters: ${charTokens}` : '',
+      locToken ? 'Environment: ' + locToken : 'Environment: specify the scene location before generation',
+      charTokens ? 'Characters and Scene Wardrobe: ' + charTokens : '',
+      itemTokens ? 'Props: ' + itemTokens : '',
+      editData.summary ? 'Scene intent: ' + editData.summary : '',
+      editData.action ? 'Action: ' + editData.action : '',
+      editData.emotion_change ? 'Emotion: ' + editData.emotion_change : '',
+      editData.time_of_day ? 'Time of day: ' + editData.time_of_day : '',
+      editData.weather ? 'Weather: ' + editData.weather : '',
       identityPack.identity_lock || '',
-      editData.action ? `Action: ${editData.action}` : '',
-      editData.emotion_change ? `Emotion: ${editData.emotion_change}` : '',
-      editData.time_of_day ? `Time of day: ${editData.time_of_day}` : '',
-      `--ar ${ar}`,
+      'WARDROBE PRIORITY: use identity images for face, hair, age and body only. Ignore clothing in identity images. The named Scene Outfit and its outfit references have absolute clothing priority.',
+      'Complete composition, readable silhouettes, consistent scale and screen direction, no accidental extra characters or props.',
+      '--ar ' + ar,
     ].filter(Boolean).join(', ');
   };
+
+  const buildVideoPrompt = () => [
+    'Image-to-video shot, preserve the approved keyframe and character identity',
+    'Keep every character in the named Scene Outfit from the approved keyframe; do not morph, replace or redesign clothing during motion.',
+    editData.action || editData.summary || scene.title || '',
+    editData.dialogue ? 'Dialogue / lip sync: ' + editData.dialogue : '',
+    editData.emotion_change ? 'Emotional arc: ' + editData.emotion_change : '',
+    editData.time_of_day ? 'Lighting continuity: ' + editData.time_of_day : '',
+    editData.weather ? 'Weather continuity: ' + editData.weather : '',
+    'Natural acting, coherent motion, cinematic camera movement, stable face and outfit, clear start and end pose.',
+  ].filter(Boolean).join(', ');
+
+  const buildPromptForType = (type) => {
+    if (type === 'character') return buildCharacterPrompt();
+    if (type === 'video') return buildVideoPrompt();
+    return buildImagePrompt();
+  };
+
+  const buildSceneVisualPrompt = () => buildImagePrompt();
 
   const buildContext = () => {
     const selectedChars = characters.filter((c) => parseArray(editData.character_ids).includes(c.id));
@@ -159,7 +318,7 @@ export default function SceneDetail() {
       `SCENE: SC${String(scene.scene_number).padStart(2, '0')} ${scene.title || ''}`,
       `PURPOSE: ${editData.purpose || ''}`,
       `SUMMARY: ${editData.summary || ''}`,
-      `LOCATION: ${location?.name || 'Chưa gán'}`,
+      `LOCATION: ${activeLocation?.name || 'Chưa gán'}`,
       `TIME: ${editData.time_of_day || ''} | WEATHER: ${editData.weather || ''}`,
       `STARTING STATE: ${stateDisplay(startState)}`,
       `ACTION: ${editData.action || ''}`,
@@ -175,16 +334,12 @@ export default function SceneDetail() {
   };
 
   const buildPanelPrompt = () => {
-    const videoPrompt = [
-      'Cinematic video scene',
-      editData.action || editData.summary || scene.title || '',
-      editData.dialogue ? `Dialogue: ${editData.dialogue}` : '',
-      editData.emotion_change ? `Emotional arc: ${editData.emotion_change}` : '',
-      'natural acting, coherent motion, cinematic camera, consistent character identity',
-    ].filter(Boolean).join(', ');
-    const nextPrompt = promptType === 'video' ? videoPrompt : buildSceneVisualPrompt();
+    const nextPrompt = buildPromptForType(promptType);
+    const promptField = promptType === 'character' ? 'character_prompt' : promptType === 'video' ? 'video_prompt' : 'image_prompt';
+    updateField(promptField, nextPrompt);
     setPromptText(nextPrompt);
-    setPanelMessage(`${promptType === 'video' ? 'Video' : 'Image'} prompt đã được build.`);
+    const promptLabel = promptType === 'character' ? 'Character' : promptType === 'video' ? 'Video' : 'Image';
+    setPanelMessage(promptLabel + ' prompt đã được build. Bấm Save để lưu.');
     return nextPrompt;
   };
 
@@ -211,7 +366,7 @@ export default function SceneDetail() {
 
   const applyAiResponse = async () => {
     if (!parsedAiData) return;
-    const allowed = ['title', 'purpose', 'summary', 'action', 'dialogue', 'emotion_change', 'transition', 'time_of_day', 'weather', 'starting_state', 'ending_state'];
+    const allowed = ['title', 'purpose', 'summary', 'action', 'dialogue', 'emotion_change', 'transition', 'time_of_day', 'weather', 'starting_state', 'ending_state', 'character_prompt', 'image_prompt', 'video_prompt'];
     const patch = {};
     allowed.forEach((key) => {
       if (parsedAiData[key] !== undefined) {
@@ -229,6 +384,53 @@ export default function SceneDetail() {
     } catch (err) {
       setPanelMessage(`Lỗi áp dụng: ${err.message}`);
     }
+  };
+
+  const copyReferenceGroup = async (group) => {
+    const urls = group.assets.map(assetUrl).filter(Boolean);
+    if (!urls.length) return;
+    setCopyingReferenceGroup(group.key);
+    const plainText = [group.label, ...urls].join('\n');
+    try {
+      if (navigator.clipboard?.write && window.ClipboardItem) {
+        const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
+        const htmlBlob = (async () => {
+          const sources = await Promise.all(urls.map(async (url) => {
+            try {
+              const response = await fetch(url);
+              if (!response.ok) throw new Error('Không tải được ảnh');
+              const blob = await response.blob();
+              return await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+            } catch {
+              return url;
+            }
+          }));
+          const images = sources.map((source, index) => '<img src="' + escapeHtml(source) + '" alt="' + escapeHtml(group.label) + ' ' + (index + 1) + '" style="max-width:320px;height:auto;margin:4px;" />').join('');
+          return new Blob(['<div><h3>' + escapeHtml(group.label) + '</h3>' + images + '</div>'], { type: 'text/html' });
+        })();
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/html': htmlBlob,
+          'text/plain': new Blob([plainText], { type: 'text/plain' }),
+        })]);
+        setPanelMessage('Đã copy bộ ' + urls.length + ' ảnh của ' + group.label + '. Có thể paste vào nơi hỗ trợ nội dung ảnh; link ảnh cũng được đính kèm.');
+      } else {
+        await navigator.clipboard.writeText(plainText);
+        setPanelMessage('Trình duyệt chỉ cho copy link: đã copy ' + urls.length + ' link ảnh của ' + group.label + '.');
+      }
+    } catch {
+      try {
+        await navigator.clipboard.writeText(plainText);
+        setPanelMessage('Không thể copy nhiều ảnh trực tiếp; đã copy ' + urls.length + ' link ảnh của ' + group.label + '.');
+      } catch {
+        setPanelMessage('Trình duyệt đang chặn clipboard. Hãy dùng Mở xem ảnh để mở từng ảnh gốc.');
+      }
+    }
+    setCopyingReferenceGroup('');
   };
 
   if (loading || !scene) {
@@ -265,6 +467,59 @@ export default function SceneDetail() {
     { key: 'transition', label: '🔄 Transition', type: 'textarea' },
   ];
 
+  const selectedCharacterIds = parseArray(editData.character_ids);
+  const selectedItemIds = parseArray(editData.item_ids);
+  const activeLocation = selectedLocationForPrompt();
+  const selectedAppearanceOutfitIds = selectedCharacterIds
+    .map((characterId) => {
+      const appearance = getCharacterAppearance(characterId);
+      return appearance.reference_mode === 'identity_outfit' ? appearance.outfit_id : '';
+    })
+    .filter(Boolean);
+  const selectedReferences = [
+    ...(identityPack.references || []),
+    ...projectAssets.filter((asset) => asset.asset_type === 'image' && (
+      (asset.target_type === 'character' && selectedCharacterIds.includes(asset.target_id)) ||
+      (asset.target_type === 'outfit' && selectedAppearanceOutfitIds.includes(asset.target_id)) ||
+      (asset.target_type === 'location' && asset.target_id === editData.location_id) ||
+      (asset.target_type === 'item' && selectedItemIds.includes(asset.target_id))
+    )),
+  ].filter((asset, index, assets) => assets.findIndex((candidate) => candidate.id === asset.id) === index);
+  const assetUrl = (asset) => {
+    const source = asset?.thumbnail || asset?.file_path || '';
+    return source && source.startsWith('/') ? 'http://localhost:3001' + source : source;
+  };
+  const liveSceneImagePrompt = buildSceneVisualPrompt();
+  const sceneImagePrompt = editData.image_prompt || liveSceneImagePrompt;
+  const referenceLabel = (asset) => asset.target_type === 'character' ? characters.find((character) => character.id === asset.target_id)?.name || 'Character' : asset.target_type === 'outfit' ? outfitLibrary.find((outfit) => outfit.id === asset.target_id)?.name || 'Outfit' : asset.target_type === 'location' ? activeLocation?.name || 'Location' : items.find((item) => item.id === asset.target_id)?.name || 'Item';
+  const characterReferenceGroups = selectedCharacterIds.map((characterId) => {
+    const character = characters.find((candidate) => candidate.id === characterId);
+    return {
+      key: 'character:' + characterId,
+      type: 'character',
+      label: character?.name || 'Nhân vật',
+      assets: selectedReferences.filter((asset) =>
+        (asset.target_type === 'character' && asset.target_id === characterId) ||
+        (asset.target_type === 'outfit' && getCharacterAppearance(characterId).reference_mode === 'identity_outfit' && asset.target_id === getCharacterAppearance(characterId).outfit_id)
+      ),
+    };
+  });
+  const locationReferenceGroups = editData.location_id ? [{
+    key: 'location:' + editData.location_id,
+    type: 'location',
+    label: activeLocation?.name || 'Bối cảnh',
+    assets: selectedReferences.filter((asset) => asset.target_type === 'location' && asset.target_id === editData.location_id),
+  }] : [];
+  const itemReferenceGroups = selectedItemIds.map((itemId) => ({
+    key: 'item:' + itemId,
+    type: 'item',
+    label: items.find((item) => item.id === itemId)?.name || 'Vật phẩm',
+    assets: selectedReferences.filter((asset) => asset.target_type === 'item' && asset.target_id === itemId),
+  }));
+  const referenceGroups = [...characterReferenceGroups, ...locationReferenceGroups, ...itemReferenceGroups];
+  const promptFieldByType = { character: 'character_prompt', image: 'image_prompt', video: 'video_prompt' };
+  const savedPromptForType = editData[promptFieldByType[promptType]] || (promptType === 'image' ? sceneImagePrompt : '');
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 0, margin: 'calc(var(--space-8) * -1)', height: 'calc(100vh - var(--header-height))' }}>
       {/* Main Editor */}
@@ -286,9 +541,10 @@ export default function SceneDetail() {
           <div className="page-header__actions">
             <span className={`canon-badge canon-badge--${scene.status}`}>{scene.status}</span>
             <button className="btn btn--secondary btn--sm" onClick={handleSave}>💾 Save</button>
-            <button className="btn btn--secondary btn--sm" onClick={() => setShowPromptModal(true)}>📋 Copy Prompt</button>
+            <button className="btn btn--secondary btn--sm" onClick={() => copyToClipboard(liveSceneImagePrompt, 'Đã chép Scene Image Prompt với trang phục hiện tại.')}>📋 Copy Image Prompt</button>
             {scene.status === 'draft' && <button className="btn btn--primary btn--sm" onClick={handleApprove}>✓ Approve</button>}
             {scene.status === 'approved' && <button className="btn btn--danger btn--sm" onClick={handleLock}>🔒 Lock</button>}
+            {scene.status === 'locked' && <button className="btn btn--secondary btn--sm" onClick={handleUnlock}>🔓 Unlock</button>}
           </div>
         </div>
 
@@ -309,6 +565,22 @@ export default function SceneDetail() {
 
         {/* Selectors Section: Location, Characters, Items, Threads */}
         <div className="card mb-4" style={{ padding: 'var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="label" style={{ marginBottom: 3 }}>🧠 Scene tự đọc kịch bản</div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>
+                Nhân vật, vật phẩm, địa điểm và tuyến truyện được đối chiếu tự động với thư viện đã cập nhật. Chỉ chỉnh tay khi cần sửa ngoại lệ.
+              </div>
+            </div>
+            <button className="btn btn--secondary btn--sm" type="button" onClick={handleAutoLink} disabled={isLocked || autoLinking}>
+              {autoLinking ? 'Đang phân tích...' : '↻ Phân tích lại'}
+            </button>
+          </div>
+          {autoLinkReport && (
+            <div style={{ padding: '8px 10px', borderRadius: 'var(--radius-md)', background: 'rgba(34, 197, 94, 0.08)', color: 'var(--text-secondary)', fontSize: 'var(--text-xs)' }}>
+              Tự nhận diện: {autoLinkReport.characters.length} nhân vật · {autoLinkReport.items.length} vật phẩm · {autoLinkReport.story_threads.length} tuyến truyện · {autoLinkReport.locations.length} địa điểm
+            </div>
+          )}
           <div className="flex gap-4">
             <div style={{ flex: 1 }}>
               <label className="label">📍 Bối Cảnh (Location)</label>
@@ -347,6 +619,45 @@ export default function SceneDetail() {
               })}
             </div>
           </div>
+
+          {/* Scene wardrobe per character */}
+          {selectedCharacterIds.length > 0 && (
+            <div>
+              <label className="label">👕 Trang Phục Theo Scene:</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                {selectedCharacterIds.map((characterId) => {
+                  const character = characters.find((candidate) => candidate.id === characterId);
+                  const availableOutfits = outfitLibrary.filter((outfit) => outfit.character_id === characterId);
+                  const appearance = getCharacterAppearance(characterId);
+                  const selectedOutfit = availableOutfits.find((outfit) => outfit.id === appearance.outfit_id);
+                  return (
+                    <div key={characterId} style={{ padding: 'var(--space-3)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)' }}>
+                      <div className="flex justify-between items-center" style={{ gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+                        <strong style={{ color: 'var(--text-primary)', minWidth: 120 }}>{character?.name || 'Nhân vật'}</strong>
+                        <select className="select" style={{ flex: 1, minWidth: 220 }} value={appearance.outfit_id} disabled={isLocked} onChange={(event) => updateCharacterAppearance(characterId, { outfit_id: event.target.value })}>
+                          <option value="">-- Chưa chọn trang phục --</option>
+                          {availableOutfits.map((outfit) => <option key={outfit.id} value={outfit.id}>{outfit.name}{outfit.era ? ' · ' + outfit.era : ''}{outfit.is_default ? ' (mặc định)' : ''}</option>)}
+                        </select>
+                        <select className="select" style={{ width: 190 }} value={appearance.reference_mode} disabled={isLocked} onChange={(event) => updateCharacterAppearance(characterId, { reference_mode: event.target.value })}>
+                          <option value="identity_only">Chỉ khóa nhận diện</option>
+                          <option value="identity_outfit">Nhận diện + ảnh trang phục</option>
+                        </select>
+                        <button className="btn btn--ghost btn--sm" type="button" onClick={() => navigate('/characters/' + characterId)}>Mở kho đồ ↗</button>
+                      </div>
+                      {selectedOutfit ? (
+                        <div style={{ marginTop: 7, color: 'var(--text-secondary)', fontSize: 'var(--text-xs)' }}>
+                          <strong>{selectedOutfit.name}:</strong> {selectedOutfit.visual_prompt || selectedOutfit.description || 'Chưa có mô tả prompt'} · {projectAssets.filter((asset) => asset.target_type === 'outfit' && asset.target_id === selectedOutfit.id && asset.asset_type === 'image').length} ảnh
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 7, color: 'var(--color-warning)', fontSize: 'var(--text-xs)' }}>Chưa có trang phục cho Scene. Prompt sẽ không dùng default_outfit để tránh mặc sai thời kỳ.</div>
+                      )}
+                      <input className="input" style={{ marginTop: 8 }} value={appearance.notes || ''} disabled={isLocked} onChange={(event) => updateCharacterAppearance(characterId, { notes: event.target.value })} placeholder="Biến thể trong cảnh: ướt mưa, dính bùn, rách tay áo..." />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Items involved */}
           <div>
@@ -393,88 +704,103 @@ export default function SceneDetail() {
           </div>
         </div>
 
-        {/* Standardized Visual Prompt for AI Image Gen (Midjourney / Flux / Runway) */}
-        <div className="card mb-4" style={{
-          padding: 'var(--space-4)',
-          background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(168, 85, 247, 0.04) 100%)',
-          border: '1px solid rgba(99, 102, 241, 0.25)'
-        }}>
+        {/* Linked visual references */}
+        <div className="card mb-4" style={{ padding: 'var(--space-4)' }}>
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <div className="label" style={{ marginBottom: 3 }}>🖼️ Visual References theo đối tượng</div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>Ảnh được load tự động và chia riêng theo từng nhân vật, bối cảnh và vật phẩm.</div>
+            </div>
+            <span className={'badge ' + (selectedReferences.length ? 'badge--success' : 'badge--warning')}>{selectedReferences.length} ảnh</span>
+          </div>
+          {referenceGroups.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              {referenceGroups.map((group) => (
+                <div key={group.key} style={{ padding: 'var(--space-3)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)' }}>
+                  <div className="flex justify-between items-center" style={{ gap: 'var(--space-3)' }}>
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontSize: 18 }}>{group.type === 'character' ? '👤' : group.type === 'location' ? '📍' : '⚔️'}</span>
+                      <div>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 'var(--text-sm)' }}>{group.label}</div>
+                        <div style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{group.assets.length} ảnh tham chiếu</div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" className="btn btn--ghost btn--sm" disabled={!group.assets.length} onClick={() => setReferenceGallery(group)}>🔍 Mở xem ảnh</button>
+                      <button type="button" className="btn btn--secondary btn--sm" disabled={!group.assets.length || copyingReferenceGroup === group.key} onClick={() => copyReferenceGroup(group)}>
+                        {copyingReferenceGroup === group.key ? 'Đang copy...' : '📋 Copy ' + group.assets.length + ' ảnh'}
+                      </button>
+                    </div>
+                  </div>
+                  {group.assets.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-2)', overflowX: 'auto', paddingBottom: 2 }}>
+                      {group.assets.map((asset) => (
+                        <button key={asset.id} type="button" title="Nhấn để mở gallery" onClick={() => setReferenceGallery(group)} style={{ flex: '0 0 74px', width: 74, height: 74, padding: 0, border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--bg-secondary)', cursor: 'zoom-in' }}>
+                          {assetUrl(asset) ? <img src={assetUrl(asset)} alt={referenceLabel(asset)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>No preview</span>}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 'var(--space-2)', color: 'var(--color-warning)', fontSize: 'var(--text-xs)' }}>Chưa có ảnh trong thư viện cho {group.label}.</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(234, 179, 8, 0.08)', color: 'var(--color-warning)', fontSize: 'var(--text-xs)' }}>
+              Scene chưa nhận diện nhân vật, địa điểm hoặc vật phẩm để load ảnh tham chiếu.
+            </div>
+          )}
+        </div>
+
+        {/* Scene Visual Prompt */}
+        <div className="card mb-4" style={{ padding: 'var(--space-4)', background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(168, 85, 247, 0.04) 100%)', border: '1px solid rgba(99, 102, 241, 0.25)' }}>
           <div className="flex justify-between items-center mb-2">
             <div className="flex items-center gap-2">
-              <span style={{ fontSize: '18px' }}>🎨</span>
-              <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                Standardized Visual Prompt (Tạo Hình AI Chuẩn Hóa)
-              </span>
-              <span className="badge badge--primary" style={{ fontSize: '10px' }}>
-                {currentProject?.aspect_ratio || '9:16'}
-              </span>
+              <span style={{ fontSize: 18 }}>🎨</span>
+              <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>Scene Visual Prompt — Identity + Trang phục theo cảnh</span>
+              <span className="badge badge--primary" style={{ fontSize: 10 }}>{currentProject?.aspect_ratio || '9:16'}</span>
             </div>
-            <button
-              className="btn btn--primary btn--sm"
-              onClick={() => {
-                const selectedChars = characters.filter(c => parseArray(editData.character_ids).includes(c.id));
-                const selectedLoc = locations.find(l => l.id === editData.location_id);
-                const ar = currentProject?.aspect_ratio || '9:16';
-                const visualStyle = currentProject?.visual_style || 'Anime cinematic style, unreal engine 5 render, dramatic lighting, 8k';
-
-                const charTokens = selectedChars.map(c => `${c.name}: ${c.appearance || 'detailed face and eyes'}, wearing ${c.default_outfit || 'signature robes'}`).join('; ');
-                const locToken = selectedLoc ? (selectedLoc.visual_prompt || `${selectedLoc.name}, ${selectedLoc.architecture || ''}, ${selectedLoc.lighting || 'cinematic lighting'}`) : '';
-
-                const vp = [
-                  visualStyle,
-                  locToken ? `Environment: ${locToken}` : '',
-                  charTokens ? `Characters: ${charTokens}` : '',
-                  editData.action ? `Action: ${editData.action}` : '',
-                  editData.time_of_day ? `Time of day: ${editData.time_of_day}` : '',
-                  `--ar ${ar.replace(':', ':')}`
-                ].filter(Boolean).join(', ');
-
-                navigator.clipboard.writeText(vp);
-                setCopiedVisualPrompt(true);
-                setTimeout(() => setCopiedVisualPrompt(false), 2000);
-              }}
-            >
-              {copiedVisualPrompt ? '✓ Đã Chép Prompt!' : '📋 Chép Visual Prompt Tạo Hình'}
-            </button>
+            <button className="btn btn--primary btn--sm" onClick={() => {
+              navigator.clipboard.writeText(liveSceneImagePrompt);
+              setCopiedVisualPrompt(true);
+              setTimeout(() => setCopiedVisualPrompt(false), 2000);
+            }}>{copiedVisualPrompt ? '✓ Đã chép!' : '📋 Copy Scene Visual Prompt'}</button>
           </div>
-
-          <div style={{
-            fontSize: 'var(--text-xs)',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-secondary)',
-            background: 'rgba(0, 0, 0, 0.3)',
-            padding: 'var(--space-3)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            lineHeight: 1.6,
-            wordBreak: 'break-word'
-          }}>
-            {(() => {
-              const selectedChars = characters.filter(c => parseArray(editData.character_ids).includes(c.id));
-              const selectedLoc = locations.find(l => l.id === editData.location_id);
-              const ar = currentProject?.aspect_ratio || '9:16';
-              const visualStyle = currentProject?.visual_style || 'Anime cinematic style, unreal engine 5 render, dramatic lighting, 8k';
-              const charTokens = selectedChars.map(c => `${c.name}: ${c.appearance || 'detailed face and eyes'}, wearing ${c.default_outfit || 'signature robes'}`).join('; ');
-              const locToken = selectedLoc ? (selectedLoc.visual_prompt || `${selectedLoc.name}, ${selectedLoc.architecture || ''}, ${selectedLoc.lighting || 'cinematic lighting'}`) : '';
-
-              return [
-                visualStyle,
-                locToken ? `Environment: ${locToken}` : '',
-                charTokens ? `Characters: ${charTokens}` : '',
-                editData.action ? `Action: ${editData.action}` : '',
-                editData.time_of_day ? `Time of day: ${editData.time_of_day}` : '',
-                `--ar ${ar.replace(':', ':')}`
-              ].filter(Boolean).join(', ');
-            })()}
+          <div style={{ fontSize: 'var(--text-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', background: 'rgba(0, 0, 0, 0.3)', padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', lineHeight: 1.6, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+            {liveSceneImagePrompt}
           </div>
+          <div className="flex justify-between items-center mt-2" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+            <span>🔒 Ảnh Character chỉ khóa nhận diện · 👕 Trang phục lấy từ bộ đồ đã chọn trong Scene</span>
+            <span style={{ color: 'var(--accent)' }}>Identity refs + Outfit refs</span>
+          </div>
+        </div>
 
-          <div className="flex justify-between items-center mt-2" style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-            <span>
-              💡 Chuẩn hóa tự động: Gắn chặt Token diện mạo nhân vật + Ánh sáng bối cảnh + Tỷ lệ khung hình
-            </span>
-            <span style={{ color: 'var(--accent)' }}>
-              Midjourney / Flux / Runway ready
-            </span>
+        {/* Prompt Pack */}
+        <div className="card mb-4" style={{ padding: 'var(--space-4)', border: '1px solid rgba(99, 102, 241, 0.25)', background: 'rgba(99, 102, 241, 0.05)' }}>
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <div className="label" style={{ marginBottom: 3 }}>✨ Prompt Pack của Scene</div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>Character Prompt + Image Prompt + Video Prompt. Bấm Save để lưu nội dung đã build.</div>
+            </div>
+            <span className="badge badge--primary">3 prompt</span>
+          </div>
+          {[
+            { key: 'character_prompt', type: 'character', label: 'Character Prompt', help: 'Danh tính, ngoại hình, trang phục và Identity Lock.' },
+            { key: 'image_prompt', type: 'image', label: 'Image Prompt / Keyframe', help: 'Bố cục hình ảnh đầy đủ cho Scene hoặc Shot.' },
+            { key: 'video_prompt', type: 'video', label: 'Video Prompt / Motion', help: 'Chuyển động, camera và trạng thái đầu/cuối.' },
+          ].map((field) => (
+            <div key={field.key} className="form-group" style={{ marginTop: 'var(--space-3)' }}>
+              <div className="flex justify-between items-center" style={{ gap: 'var(--space-2)' }}>
+                <label className="label" style={{ marginBottom: 3 }}>{field.label}</label>
+                <button type="button" className="btn btn--secondary btn--sm" disabled={isLocked} onClick={() => updateField(field.key, buildPromptForType(field.type))}>⚡ Build</button>
+              </div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginBottom: 5 }}>{field.help}</div>
+              <textarea className="input textarea" rows={field.type === 'character' ? 5 : 4} value={editData[field.key] || (field.type === 'image' ? sceneImagePrompt : '')} onChange={(event) => updateField(field.key, event.target.value)} disabled={isLocked} />
+            </div>
+          ))}
+          <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-2)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>
+            💡 Prompt là text để gửi sang công cụ AI. Ảnh/video tạo ra sẽ được upload hoặc gắn vào từng Shot trong Shot Editor.
           </div>
         </div>
 
@@ -541,11 +867,11 @@ export default function SceneDetail() {
                 <div className="label">📍 Location</div>
                 <div className="card" style={{ padding: 'var(--space-3)' }}>
                   <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>
-                    {location?.name || 'Chưa gán location'}
+                    {activeLocation?.name || 'Chưa gán location'}
                   </div>
-                  {location?.description && (
+                  {activeLocation?.description && (
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 'var(--space-1)' }}>
-                      {location.description}
+                      {activeLocation.description}
                     </div>
                   )}
                 </div>
@@ -600,55 +926,47 @@ export default function SceneDetail() {
             <div className="flex flex-col gap-4">
               <div>
                 <div className="label">Prompt Type</div>
-                <select className="input" value={promptType} onChange={(e) => setPromptType(e.target.value)}>
-                  <option value="image">Image Prompt</option>
-                  <option value="video">Video Prompt</option>
+                <select className="input" value={promptType} onChange={(event) => { setPromptType(event.target.value); setPromptText(editData[promptFieldByType[event.target.value]] || ''); }}>
+                  <option value="character">Character Prompt</option>
+                  <option value="image">Image Prompt / Keyframe</option>
+                  <option value="video">Video Prompt / Motion</option>
                 </select>
               </div>
 
               <div className="flex flex-col gap-2">
-                <button className="btn btn--primary btn--sm w-full" onClick={buildPanelPrompt}>✨ Build Prompt</button>
-                <button className="btn btn--secondary btn--sm w-full" onClick={() => copyToClipboard(promptText, 'Đã chép prompt.')} disabled={!promptText}>📋 Copy Prompt</button>
-                <button className="btn btn--secondary btn--sm w-full" onClick={() => setShowPromptModal(true)}>📥 Paste AI Response</button>
+                <button className="btn btn--primary btn--sm w-full" onClick={buildPanelPrompt} disabled={isLocked}>✨ Build Prompt</button>
+                <button className="btn btn--secondary btn--sm w-full" onClick={() => copyToClipboard(promptText || savedPromptForType, 'Đã chép prompt.')} disabled={!(promptText || savedPromptForType)}>📋 Copy Prompt</button>
+                <button className="btn btn--secondary btn--sm w-full" onClick={() => setShowPromptModal(true)}>📝 Dán phản hồi chữ / JSON</button>
               </div>
 
-              {promptText && <textarea className="input textarea" rows={10} value={promptText} readOnly style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }} />}
+              {(promptText || savedPromptForType) && <textarea className="input textarea" rows={10} value={promptText || savedPromptForType} onChange={(event) => { setPromptText(event.target.value); updateField(promptFieldByType[promptType], event.target.value); }} disabled={isLocked} style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }} />}
 
               <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: 'var(--space-3)', background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-md)' }}>
-                💡 Build prompt → Copy → Paste vào ChatGPT → Copy response → Paste lại đây
+                💡 Dùng Copy Prompt để gửi text sang ChatGPT/Midjourney/Flux/Runway. Kết quả ảnh/video không dán vào đây; hãy upload hoặc gắn asset ở Shot Editor.
               </div>
             </div>
           )}
 
           {panelTab === 'continuity' && (
             <div className="flex flex-col gap-4">
-              <button
-                className="btn btn--primary btn--sm w-full"
-                onClick={() => setShowContinuityModal(true)}
-              >
-                🔍 Run Continuity Check
-              </button>
-
-              <div style={{
-                fontSize: 'var(--text-xs)',
-                color: 'var(--text-muted)',
-                padding: 'var(--space-3)',
-                background: 'var(--bg-tertiary)',
-                borderRadius: 'var(--radius-md)',
-                lineHeight: 'var(--leading-relaxed)',
-              }}>
-                Kiểm tra tính nhất quán tự động:
+              <button className="btn btn--primary btn--sm w-full" onClick={() => setShowContinuityModal(true)}>🔍 Run Continuity Check</button>
+              {continuityResult && <div className="card" style={{ padding: 'var(--space-3)', border: '1px solid ' + (continuityResult.ready ? 'var(--color-success)' : continuityResult.valid ? 'var(--color-warning)' : 'var(--color-error)') }}>
+                <div className="flex justify-between items-center"><strong style={{ fontSize: 'var(--text-sm)' }}>{continuityResult.ready ? '✅ Sẵn sàng' : continuityResult.valid ? '⚠️ Cần xem lại' : '⛔ Có blocker'}</strong><span className="badge">{continuityResult.score ?? 0}/100</span></div>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 5 }}>Blocker: {continuityResult.errors?.length || 0} · Warning: {continuityResult.warnings?.length || 0}</div>
+              </div>}
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', padding: 'var(--space-3)', background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-md)', lineHeight: 'var(--leading-relaxed)' }}>
+                Kiểm tra tự động trước khi tạo keyframe/video:
                 <ul style={{ marginTop: 'var(--space-2)', paddingLeft: 'var(--space-4)' }}>
-                  <li>Vị trí nhân vật</li>
-                  <li>Trang phục</li>
-                  <li>Chấn thương chưa lành</li>
-                  <li>Kiến thức (Knowledge Matrix)</li>
-                  <li>Tình trạng vật phẩm</li>
-                  <li>Quy tắc thế giới (Bible)</li>
+                  <li>Canon Bible và luật thế giới</li>
+                  <li>Ending State, vị trí, trang phục, chấn thương</li>
+                  <li>Knowledge Matrix và tình trạng vật phẩm</li>
+                  <li>Location, ảnh tham chiếu và đủ 3 loại prompt</li>
                 </ul>
+                <div style={{ marginTop: 'var(--space-2)', color: 'var(--text-tertiary)' }}>PASS = không phát hiện vấn đề. WARNING = cần xác nhận. BLOCKER = phải sửa trước khi Approve.</div>
               </div>
             </div>
           )}
+
           {panelMessage && <div style={{ color: 'var(--color-success)', fontSize: 'var(--text-xs)', marginTop: 'var(--space-3)' }}>✓ {panelMessage}</div>}
         </div>
       </div>
@@ -658,9 +976,46 @@ export default function SceneDetail() {
         <ContinuityCheckModal
           sceneId={id}
           projectId={currentProject?.id}
-          initialContent={`${editData.title || ''}\n${editData.action || ''}\n${editData.dialogue || ''}`}
+          initialContent={`${editData.title || ''}\nLOCATION: ${activeLocation?.name || ''}\n${editData.action || ''}\n${editData.dialogue || ''}\nCHARACTER PROMPT: ${editData.character_prompt || ''}\nIMAGE PROMPT: ${editData.image_prompt || ''}\nVIDEO PROMPT: ${editData.video_prompt || ''}`}
+          onResult={setContinuityResult}
           onClose={() => setShowContinuityModal(false)}
         />
+      )}
+
+      {/* Reference Gallery Modal */}
+      {referenceGallery && (
+        <div className="modal-overlay" onClick={() => setReferenceGallery(null)}>
+          <div className="modal" style={{ maxWidth: 980 }} onClick={(event) => event.stopPropagation()}>
+            <div className="modal__header">
+              <div>
+                <h3 className="modal__title">🖼️ {referenceGallery.label}</h3>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 3 }}>{referenceGallery.assets.length} ảnh tham chiếu trong Character Library</div>
+              </div>
+              <button className="btn btn--ghost btn--icon" onClick={() => setReferenceGallery(null)}>✕</button>
+            </div>
+            <div className="modal__body" style={{ maxHeight: '72vh', overflowY: 'auto' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'var(--space-3)' }}>
+                {referenceGallery.assets.map((asset, index) => (
+                  <div key={asset.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+                    <button type="button" onClick={() => window.open(assetUrl(asset), '_blank', 'noopener,noreferrer')} style={{ display: 'block', width: '100%', height: 260, border: 0, padding: 0, background: 'var(--bg-secondary)', cursor: 'zoom-in' }}>
+                      <img src={assetUrl(asset)} alt={referenceGallery.label + ' ' + (index + 1)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    </button>
+                    <div className="flex justify-between items-center" style={{ padding: '8px 10px' }}>
+                      <span style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-xs)' }}>{(asset.reference_kind || 'Ảnh ' + (index + 1)) + ' · v' + (asset.version || 1)}</span>
+                      <button className="btn btn--ghost btn--sm" type="button" onClick={() => window.open(assetUrl(asset), '_blank', 'noopener,noreferrer')}>Mở ảnh gốc ↗</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="modal__footer">
+              <button className="btn btn--ghost" onClick={() => setReferenceGallery(null)}>Đóng</button>
+              <button className="btn btn--primary" disabled={copyingReferenceGroup === referenceGallery.key} onClick={() => copyReferenceGroup(referenceGallery)}>
+                {copyingReferenceGroup === referenceGallery.key ? 'Đang copy...' : '📋 Copy ' + referenceGallery.assets.length + ' ảnh'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Paste AI Response Modal */}
@@ -668,16 +1023,16 @@ export default function SceneDetail() {
         <div className="modal-overlay" onClick={() => setShowPromptModal(false)}>
           <div className="modal" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal__header">
-              <h3 className="modal__title">📥 Paste AI Response</h3>
+              <h3 className="modal__title">📝 Dán phản hồi dạng chữ / JSON</h3>
               <button className="btn btn--ghost btn--icon" onClick={() => setShowPromptModal(false)}>✕</button>
             </div>
             <div className="modal__body">
               <div className="form-group">
-                <label className="label">Paste ChatGPT response tại đây</label>
+                <label className="label">Dán phản hồi dạng text hoặc JSON tại đây</label>
                 <textarea
                   className="input textarea"
                   rows={12}
-                  placeholder="Paste nội dung AI đã tạo..."
+                  placeholder="Chỉ dán text/JSON để cập nhật Scene; không dán file ảnh hoặc video vào ô này."
                   style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}
                   value={rawAiResponse}
                   onChange={(e) => setRawAiResponse(e.target.value)}

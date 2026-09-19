@@ -130,6 +130,25 @@ CREATE TABLE IF NOT EXISTS character_states (
 );
 
 -- ============================================================
+-- CHARACTER OUTFITS
+-- Named wardrobe library, reusable per Scene
+-- ============================================================
+CREATE TABLE IF NOT EXISTS character_outfits (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  era TEXT DEFAULT '',
+  description TEXT DEFAULT '',
+  visual_prompt TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
+  is_default INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'approved',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
 -- CHARACTER RELATIONSHIPS
 -- Quan hệ giữa các nhân vật
 -- ============================================================
@@ -261,6 +280,12 @@ CREATE TABLE IF NOT EXISTS episodes (
   ending TEXT DEFAULT '',
   cliffhanger TEXT DEFAULT '',
   duration_target INTEGER DEFAULT 120,
+  duration_min INTEGER DEFAULT 90,
+  duration_max INTEGER DEFAULT 300,
+  content_density TEXT DEFAULT 'adaptive',
+  word_budget INTEGER DEFAULT 0,
+  planned_duration INTEGER DEFAULT 0,
+  duration_notes TEXT DEFAULT '',
 
   previous_episode_id TEXT REFERENCES episodes(id),
   next_episode_id TEXT REFERENCES episodes(id),
@@ -296,10 +321,16 @@ CREATE TABLE IF NOT EXISTS scenes (
   ending_state TEXT DEFAULT '{}',
   transition TEXT DEFAULT '',
 
+  -- Prompt pack used by the visual and video production workflow
+  character_prompt TEXT DEFAULT '',
+  image_prompt TEXT DEFAULT '',
+  video_prompt TEXT DEFAULT '',
+
   -- JSON arrays of IDs
   character_ids TEXT DEFAULT '[]',
   item_ids TEXT DEFAULT '[]',
   story_thread_ids TEXT DEFAULT '[]',
+  character_appearances TEXT DEFAULT '{}',
 
   status TEXT DEFAULT 'draft' CHECK(status IN ('draft','approved','locked')),
 
@@ -317,6 +348,8 @@ CREATE TABLE IF NOT EXISTS shots (
   scene_id TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
   character_ids TEXT DEFAULT '[]',
   reference_asset_ids TEXT DEFAULT '[]',
+  start_frame_asset_ids TEXT DEFAULT '[]',
+  end_frame_asset_ids TEXT DEFAULT '[]',
 
   shot_number INTEGER NOT NULL,
   duration REAL DEFAULT 0,
@@ -335,6 +368,9 @@ CREATE TABLE IF NOT EXISTS shots (
   music TEXT DEFAULT '',
   image_prompt TEXT DEFAULT '',
   video_prompt TEXT DEFAULT '',
+  start_frame_prompt TEXT DEFAULT '',
+  end_frame_prompt TEXT DEFAULT '',
+  flow_transition_prompt TEXT DEFAULT '',
 
   status TEXT DEFAULT 'draft' CHECK(status IN ('draft','script_done','image_prompt_done','image_done','video_prompt_done','video_done','approved')),
 
@@ -503,6 +539,7 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
 CREATE INDEX IF NOT EXISTS idx_character_states_character ON character_states(character_id);
 CREATE INDEX IF NOT EXISTS idx_character_states_scene ON character_states(scene_id);
+CREATE INDEX IF NOT EXISTS idx_character_outfits_character ON character_outfits(character_id);
 CREATE INDEX IF NOT EXISTS idx_character_relationships_char ON character_relationships(character_id);
 CREATE INDEX IF NOT EXISTS idx_locations_project ON locations(project_id);
 CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id);

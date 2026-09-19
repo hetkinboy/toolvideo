@@ -21,6 +21,27 @@ function ensureSchemaMigrations(database) {
   if (!shotColumns.includes('reference_asset_ids')) {
     database.exec("ALTER TABLE shots ADD COLUMN reference_asset_ids TEXT DEFAULT '[]'");
   }
+  if (!shotColumns.includes('start_frame_asset_ids')) {
+    database.exec("ALTER TABLE shots ADD COLUMN start_frame_asset_ids TEXT DEFAULT '[]'");
+  }
+  if (!shotColumns.includes('end_frame_asset_ids')) {
+    database.exec("ALTER TABLE shots ADD COLUMN end_frame_asset_ids TEXT DEFAULT '[]'");
+  }
+  for (const column of ['start_frame_prompt', 'end_frame_prompt', 'flow_transition_prompt']) {
+    if (!shotColumns.includes(column)) {
+      database.exec("ALTER TABLE shots ADD COLUMN " + column + " TEXT DEFAULT ''");
+    }
+  }
+
+  const episodeColumns = database.pragma('table_info(episodes)').map((column) => column.name);
+  for (const column of ['duration_min', 'duration_max', 'content_density', 'word_budget', 'planned_duration', 'duration_notes']) {
+    if (!episodeColumns.includes(column)) {
+      database.exec("ALTER TABLE episodes ADD COLUMN " + column + " " + (column === 'content_density' || column === 'duration_notes' ? "TEXT DEFAULT ''" : "INTEGER DEFAULT 0"));
+    }
+  }
+  if (!episodeColumns.includes('duration_min')) database.exec("UPDATE episodes SET duration_min = 90 WHERE duration_min IS NULL OR duration_min = 0");
+  if (!episodeColumns.includes('duration_max')) database.exec("UPDATE episodes SET duration_max = 300 WHERE duration_max IS NULL OR duration_max = 0");
+  database.exec("UPDATE episodes SET content_density = 'adaptive' WHERE content_density IS NULL OR content_density = ''");
 
   const assetColumns = database.pragma('table_info(assets)').map((column) => column.name);
   if (!assetColumns.includes('reference_kind')) {
@@ -30,6 +51,16 @@ function ensureSchemaMigrations(database) {
   const characterColumns = database.pragma('table_info(characters)').map((column) => column.name);
   if (!characterColumns.includes('apparent_age')) {
     database.exec("ALTER TABLE characters ADD COLUMN apparent_age TEXT DEFAULT ''");
+  }
+
+  const sceneColumns = database.pragma('table_info(scenes)').map((column) => column.name);
+  for (const column of ['character_prompt', 'image_prompt', 'video_prompt']) {
+    if (!sceneColumns.includes(column)) {
+      database.exec("ALTER TABLE scenes ADD COLUMN " + column + " TEXT DEFAULT ''");
+    }
+  }
+  if (!sceneColumns.includes('character_appearances')) {
+    database.exec("ALTER TABLE scenes ADD COLUMN character_appearances TEXT DEFAULT '{}'");
   }
 }
 

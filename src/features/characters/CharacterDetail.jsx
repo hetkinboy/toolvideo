@@ -20,6 +20,11 @@ export default function CharacterDetail() {
   const [apparentAgeDraft, setApparentAgeDraft] = useState('');
   const [apparentAgeSaving, setApparentAgeSaving] = useState(false);
   const [apparentAgeMessage, setApparentAgeMessage] = useState('');
+  const [outfits, setOutfits] = useState([]);
+  const [outfitForm, setOutfitForm] = useState({ name: '', era: '', description: '', visual_prompt: '', tags: '', is_default: false });
+  const [outfitFiles, setOutfitFiles] = useState([]);
+  const [outfitSaving, setOutfitSaving] = useState(false);
+  const [outfitMessage, setOutfitMessage] = useState('');
 
   useEffect(() => {
     loadCharacter();
@@ -46,10 +51,87 @@ export default function CharacterDetail() {
       setCharacter(data);
       setApparentAgeDraft(data.apparent_age || '');
       try { setReferenceAssets(await api.getCharacterReferenceAssets(id)); } catch { setReferenceAssets([]); }
+      try { setOutfits(await api.getCharacterOutfits(id)); } catch { setOutfits([]); }
     } catch (err) {
       console.error(err);
     }
     setLoading(false);
+  };
+
+
+  const saveOutfit = async (event) => {
+    event.preventDefault();
+    if (!outfitForm.name.trim()) return;
+    setOutfitSaving(true);
+    setOutfitMessage('');
+    try {
+      if (outfitForm.is_default) {
+        await Promise.all(outfits.filter((outfit) => outfit.is_default).map((outfit) => api.updateOutfit(outfit.id, { is_default: 0 })));
+      }
+      const created = await api.createOutfit({
+        project_id: character.project_id,
+        character_id: character.id,
+        name: outfitForm.name.trim(),
+        era: outfitForm.era.trim(),
+        description: outfitForm.description.trim(),
+        visual_prompt: outfitForm.visual_prompt.trim(),
+        tags: outfitForm.tags.trim(),
+        is_default: outfitForm.is_default ? 1 : 0,
+        status: 'approved',
+      });
+      const assets = [];
+      for (let index = 0; index < outfitFiles.length; index += 1) {
+        const file = outfitFiles[index];
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        assets.push(await api.uploadAsset({
+          project_id: character.project_id,
+          asset_type: 'image',
+          target_type: 'outfit',
+          target_id: created.id,
+          reference_kind: 'outfit',
+          filename: file.name,
+          mime_type: file.type,
+          data,
+          version: index + 1,
+          status: 'approved_reference',
+        }));
+      }
+      setOutfits((current) => [
+        ...(outfitForm.is_default ? current.map((outfit) => ({ ...outfit, is_default: 0 })) : current),
+        { ...created, assets },
+      ]);
+      setOutfitForm({ name: '', era: '', description: '', visual_prompt: '', tags: '', is_default: false });
+      setOutfitFiles([]);
+      setOutfitMessage('Đã thêm trang phục vào kho. Scene có thể chọn theo tên ngay.');
+    } catch (err) {
+      setOutfitMessage('Lỗi: ' + err.message);
+    } finally {
+      setOutfitSaving(false);
+    }
+  };
+
+  const removeOutfit = async (outfit) => {
+    if (!window.confirm('Xóa bộ trang phục “' + outfit.name + '” và toàn bộ ảnh của bộ này?')) return;
+    try {
+      await Promise.all((outfit.assets || []).map((asset) => api.deleteAsset(asset.id)));
+      await api.deleteOutfit(outfit.id);
+      setOutfits((current) => current.filter((item) => item.id !== outfit.id));
+      setOutfitMessage('Đã xóa trang phục.');
+    } catch (err) {
+      setOutfitMessage('Lỗi: ' + err.message);
+    }
+  };
+
+  const outfitPrompt = (outfit) => outfit.visual_prompt || [outfit.name, outfit.era, outfit.description].filter(Boolean).join(', ');
+
+  const copyOutfitPrompt = async (outfit) => {
+    await navigator.clipboard.writeText(outfitPrompt(outfit));
+    setOutfitMessage('Đã copy prompt trang phục “' + outfit.name + '”.');
   };
 
   if (loading || !character) {
@@ -412,6 +494,7 @@ export default function CharacterDetail() {
         {[
           { key: 'profile', label: '📋 Hồ sơ' },
           { key: 'reference', label: '🖼️ Bộ ảnh tham chiếu' },
+          { key: 'wardrobe', label: '👕 Kho trang phục' },
           { key: 'state', label: '🔄 Trạng thái hiện tại' },
           { key: 'relationships', label: '🤝 Quan hệ' },
         ].map((t) => (
@@ -550,6 +633,93 @@ export default function CharacterDetail() {
           </form>
 
           {referenceAssets.length === 0 ? <div className="empty-state card"><div className="empty-state__icon">🖼️</div><div className="empty-state__title">Chưa có ảnh tham chiếu</div><div className="empty-state__desc">Thêm bảng mẫu tổng và các ảnh theo từng mẫu để cảnh quay giữ đúng nhận diện nhân vật.</div></div> : <div className="grid grid--3">{referenceAssets.map((asset) => <div key={asset.id} className="card" style={{ padding: 'var(--space-3)' }}><div style={{ height: 150, borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{asset.thumbnail && /^https?:\/\//.test(asset.thumbnail) ? <img src={asset.thumbnail} alt={`Ảnh tham chiếu ${character.name}`} title="Nhấn để xem ảnh lớn" onClick={() => setPreviewAsset(asset)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' }} /> : <span style={{ fontSize: 36 }}>🖼️</span>}</div><div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--accent-primary)' }}>{referenceKindLabels[asset.reference_kind] || 'Ảnh tham chiếu khác'}</div><div style={{ marginTop: 'var(--space-1)', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>{asset.file_path}</div><div className="flex items-center justify-between" style={{ marginTop: 'var(--space-2)' }}><span className="badge badge--success">v{asset.version || 1}</span><button className="btn btn--ghost btn--sm" style={{ color: 'var(--color-error)' }} onClick={() => removeReferenceImage(asset)}>Xóa</button></div></div>)}</div>}
+        </div>
+      )}
+
+      {/* Wardrobe Tab */}
+      {activeTab === 'wardrobe' && (
+        <div className="flex flex-col gap-4">
+          <form className="card" onSubmit={saveOutfit} style={{ padding: 'var(--space-4)' }}>
+            <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-3)' }}>
+              <div>
+                <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 700 }}>Add manually / exception</h2>
+                <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>Normally this library is created automatically from the AI outline. Use this form only for a one-off outfit or correction; Scenes will still select outfits by context.</p>
+              </div>
+              <span className="badge badge--primary">{outfits.length} bộ</span>
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group">
+                <label className="label">Tên trang phục *</label>
+                <input className="input" value={outfitForm.name} onChange={(event) => setOutfitForm({ ...outfitForm, name: event.target.value })} placeholder="Ví dụ: Đồ hiện đại trước xuyên không" />
+              </div>
+              <div className="form-group">
+                <label className="label">Thời kỳ / hoàn cảnh</label>
+                <input className="input" value={outfitForm.era} onChange={(event) => setOutfitForm({ ...outfitForm, era: event.target.value })} placeholder="Hiện đại, cổ trang, chiến đấu..." />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="label">Mô tả đầy đủ</label>
+              <textarea className="input textarea" rows={3} value={outfitForm.description} onChange={(event) => setOutfitForm({ ...outfitForm, description: event.target.value })} placeholder="Áo khoác tối màu, áo thun trơn, quần dài và giày hiện đại; bị ướt mưa..." />
+            </div>
+            <div className="form-group">
+              <label className="label">Prompt trang phục</label>
+              <textarea className="input textarea" rows={3} value={outfitForm.visual_prompt} onChange={(event) => setOutfitForm({ ...outfitForm, visual_prompt: event.target.value })} placeholder="Modern dark jacket, plain shirt, trousers, modern shoes, rain-soaked fabric..." />
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group">
+                <label className="label">Từ khóa để Scene tự nhận diện</label>
+                <input className="input" value={outfitForm.tags} onChange={(event) => setOutfitForm({ ...outfitForm, tags: event.target.value })} placeholder="hiện đại, thành phố, trước xuyên không" />
+              </div>
+              <div className="form-group">
+                <label className="label">Ảnh của bộ trang phục</label>
+                <input className="input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => setOutfitFiles(Array.from(event.target.files || []))} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2" style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', marginTop: 'var(--space-2)' }}>
+              <input type="checkbox" checked={outfitForm.is_default} onChange={(event) => setOutfitForm({ ...outfitForm, is_default: event.target.checked })} />
+              Dùng làm trang phục mặc định khi Scene không nói rõ
+            </label>
+            <div className="flex justify-between items-center" style={{ marginTop: 'var(--space-3)' }}>
+              <span style={{ color: outfitMessage.startsWith('Lỗi:') ? 'var(--color-error)' : 'var(--color-success)', fontSize: 'var(--text-xs)' }}>{outfitMessage}</span>
+              <button className="btn btn--primary" type="submit" disabled={outfitSaving || !outfitForm.name.trim()}>{outfitSaving ? 'Đang lưu...' : '＋ Thêm vào kho trang phục'}</button>
+            </div>
+          </form>
+
+          {outfits.length === 0 ? (
+            <div className="empty-state card">
+              <div className="empty-state__icon">👕</div>
+              <div className="empty-state__title">Chưa có trang phục đặt tên</div>
+              <div className="empty-state__desc">Tạo ít nhất một bộ để Scene không phải dùng default_outfit chung cho mọi thời kỳ.</div>
+            </div>
+          ) : (
+            <div className="grid grid--2">
+              {outfits.map((outfit) => (
+                <div key={outfit.id} className="card" style={{ padding: 'var(--space-4)' }}>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{outfit.name}</h3>
+                        {Boolean(outfit.is_default) && <span className="badge badge--success">Mặc định</span>}
+                      </div>
+                      <div style={{ color: 'var(--accent-primary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>{outfit.era || 'Chưa đặt thời kỳ'}</div>
+                    </div>
+                    <button className="btn btn--ghost btn--sm" type="button" style={{ color: 'var(--color-error)' }} onClick={() => removeOutfit(outfit)}>Xóa</button>
+                  </div>
+                  {outfit.description && <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', marginTop: 'var(--space-3)', lineHeight: 1.6 }}>{outfit.description}</p>}
+                  <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', whiteSpace: 'pre-wrap' }}>{outfitPrompt(outfit)}</div>
+                  {(outfit.assets || []).length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, overflowX: 'auto', marginTop: 'var(--space-3)' }}>
+                      {outfit.assets.map((asset) => <img key={asset.id} src={asset.thumbnail || asset.file_path} alt={outfit.name} onClick={() => setPreviewAsset(asset)} style={{ width: 84, height: 84, objectFit: 'cover', borderRadius: 'var(--radius-md)', cursor: 'zoom-in', border: '1px solid var(--border-subtle)' }} />)}
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center" style={{ marginTop: 'var(--space-3)' }}>
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>{(outfit.assets || []).length} ảnh · Tags: {outfit.tags || '—'}</span>
+                    <button className="btn btn--secondary btn--sm" type="button" onClick={() => copyOutfitPrompt(outfit)}>📋 Copy prompt</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

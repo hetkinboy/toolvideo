@@ -162,7 +162,100 @@ Stop-Process -Id MA_PID
 - Chạy lại `npm install` bên trong thư mục `server`.
 - Trên Windows, có thể cần cài Visual Studio Build Tools nếu npm không tìm được binary dựng sẵn.
 
-## Cấu trúc chính
+## Quy trình làm truyện dài
+
+### 1. Lập dàn ý trước khi sản xuất
+
+Không ép mọi Episode về 120 giây. Hãy chia theo ba tầng:
+
+`text
+Bộ truyện tổng
+→ Story Arc
+→ Episode có thời lượng linh hoạt
+→ Scene
+→ Shot
+`
+
+Trong **Master Outline**, chọn chiến lược thời lượng:
+
+- **Linh hoạt 120–300 giây**: khuyến nghị cho truyện dài.
+- **Ngắn 90–120 giây**: dùng cho hook, biến cố hoặc cliffhanger.
+- **Chiều sâu 180–300 giây**: dùng cho phát triển nhân vật và thế giới.
+- **Điện ảnh 240–480 giây**: dùng cho chiến đấu, tâm lý và nhiều phân đoạn.
+
+Mỗi Episode nên có một mục tiêu chính, một xung đột, một bước ngoặt và một câu hỏi kéo sang tập sau.
+
+### 2. Kiểm tra thời lượng Episode
+
+Mở:
+
+`Episodes → chọn Episode → Kế hoạch thời lượng`
+
+Nhập:
+
+- Thời lượng mục tiêu.
+- Khoảng tối thiểu/tối đa.
+- Mật độ nội dung.
+- Ngân sách lời thoại.
+- Ghi chú điểm nên tách tập.
+
+Hệ thống tự đo từ:
+
+- Tổng thời lượng Scene.
+- Tổng thời lượng Shot.
+- Số từ thoại.
+
+Nếu nội dung vượt giới hạn, nên tách Episode thay vì cắt mất thông tin. Nếu quá ngắn, bổ sung diễn biến hoặc phát triển cảm xúc trước khi sản xuất hình/video.
+
+### 3. Trang phục và Identity Lock
+
+Quy trình khuyến nghị:
+
+1. Tạo nhân vật trong `Characters`.
+2. Upload ảnh nhận diện khuôn mặt.
+3. Tạo các bộ trong `Kho trang phục`.
+4. Đặt từ khóa bối cảnh cho từng bộ.
+5. Trong Scene, để hệ thống tự nhận diện nhân vật và chọn trang phục.
+6. Kiểm tra lại Scene Outfit trước khi sinh prompt.
+
+Ảnh nhận diện chỉ khóa khuôn mặt, tóc, mắt, độ tuổi ngoại hình và vóc dáng. Trang phục của Scene Outfit có quyền ưu tiên cao hơn ảnh nhận diện.
+
+### 4. Quy trình Google Flow: Start Frame → End Frame
+
+Mở:
+
+`Scenes → Mở Shot Editor`
+
+Mỗi Shot có:
+
+- **Start Frame**: một ảnh duy nhất tại giây 0.
+- **End Frame**: một ảnh duy nhất ở khoảnh khắc cuối.
+- **Flow Transition Prompt**: mô tả chuyển động giữa hai frame.
+- **Copy Flow Prompt Pack**: copy toàn bộ prompt.
+
+Quy trình:
+
+1. Tạo ảnh Start Frame bằng Image Prompt.
+2. Lưu/upload ảnh vào Asset Manager.
+3. Tạo End Frame với cùng nhân vật, trang phục, bối cảnh và hướng máy quay.
+4. Chọn hai ảnh trong Shot Editor.
+5. Bấm `Tạo lại Flow Pack`, sau đó lưu Shot.
+6. Trong Google Flow chọn `Video → Frames`.
+7. Đưa ảnh Start vào Start Frame, ảnh End vào End Frame.
+8. Dán Flow Transition Prompt.
+9. Đưa ảnh nhân vật/bối cảnh riêng vào Ingredients nếu cần.
+
+Không upload một bảng collage nhiều ô làm Start Frame hoặc End Frame. Collage chỉ dùng làm storyboard tham khảo; mỗi Shot phải dùng một ảnh riêng.
+
+### 5. Import an toàn
+
+Nếu chỉ muốn cập nhật kho trang phục mà không thay thế Scene cũ, chọn:
+
+`Chỉ cập nhật kho trang phục, giữ nguyên Scene cũ`
+
+Database SQLite và thư mục upload được lưu cùng repository để có thể tiếp tục dự án trên máy khác. Chỉ thao tác trên một máy tại một thời điểm vì SQLite không merge an toàn như mã nguồn.
+
+`## Cấu trúc chính
 
 ```text
 toolvideo/

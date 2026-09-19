@@ -21,7 +21,7 @@ export function buildShotPrompts(shot = {}, scene = {}, project = {}, characters
   const selectedCharacterIds = parseJsonArray(shot.character_ids || scene.character_ids);
   const selectedCharacters = characters.filter((character) => selectedCharacterIds.includes(character.id));
   const identityLock = selectedCharacters.length ? [
-    'CHARACTER IDENTITY LOCK — preserve the same face, hair, eye color, body proportions and signature outfit in every frame:',
+    'CHARACTER IDENTITY LOCK — preserve face, hair, eye color, apparent age and body proportions. Clothing is controlled by the Scene:',
     ...selectedCharacters.map((character) => {
       const refs = referenceAssets.filter((asset) => asset.target_type === 'character' && asset.target_id === character.id && asset.asset_type === 'image' && asset.status !== 'archived');
       const refText = refs.length ? `Reference image: ${refs.map((asset) => asset.file_path || asset.thumbnail || asset.id).join(' | ')}` : '';
@@ -29,15 +29,16 @@ export function buildShotPrompts(shot = {}, scene = {}, project = {}, characters
         ? `chronological age=${character.age || 'unknown'}, apparent visual age=${character.apparent_age}; keep the apparent visual age even if the character is immortal or centuries old`
         : `visual age=${character.age || 'profile-defined age'}`;
       return [
-        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
+        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}`,
         refText,
       ].filter(Boolean).join(', ');
     }),
-    'Do not change character identity, hairstyle, eye color or outfit unless the shot explicitly says so.',
+    'Use identity references for identity only. Preserve the named Scene Outfit inherited through scene.character_prompt and scene.image_prompt.',
   ].join('\n') : '';
   const imagePrompt = [
-    style,
-    identityLock,
+    scene.image_prompt || style,
+    scene.image_prompt ? '' : identityLock,
+    scene.character_prompt || '',
     shot.description ? `Shot: ${shot.description}` : '',
     shot.background ? `Background: ${shot.background}` : '',
     shot.character_action ? `Character action: ${shot.character_action}` : '',
@@ -50,7 +51,8 @@ export function buildShotPrompts(shot = {}, scene = {}, project = {}, characters
   ].filter(Boolean).join(', ');
 
   const videoPrompt = [
-    'Cinematic video shot',
+    scene.video_prompt || 'Cinematic video shot',
+    scene.video_prompt ? '' : scene.character_prompt || identityLock,
     shot.description || scene.action || scene.summary || scene.title || '',
     shot.camera_movement ? `Camera movement: ${shot.camera_movement}` : '',
     shot.camera_angle ? `Camera angle: ${shot.camera_angle}` : '',
@@ -62,7 +64,45 @@ export function buildShotPrompts(shot = {}, scene = {}, project = {}, characters
     'consistent identity, natural motion, cinematic pacing, no text artifacts',
   ].filter(Boolean).join(', ');
 
-  return { image_prompt: imagePrompt, video_prompt: videoPrompt };
+    const startFramePrompt = [
+    'GOOGLE FLOW START FRAME',
+    'Use the uploaded Start Frame as the exact opening composition of this shot.',
+    'Preserve the same character identity, wardrobe, screen direction, environment, lighting, lens and aspect ratio.',
+    shot.description ? 'Opening visual: ' + shot.description : '',
+    shot.camera_shot ? 'Framing: ' + shot.camera_shot : '',
+    shot.camera_angle ? 'Angle: ' + shot.camera_angle : '',
+    shot.composition ? 'Composition: ' + shot.composition : '',
+    'This is one clean frame, not a storyboard, collage or contact sheet. No split screen, no extra panels, no text.',
+  ].filter(Boolean).join('\n');
+
+  const endFramePrompt = [
+    'GOOGLE FLOW END FRAME',
+    'Use the uploaded End Frame as the exact final composition of this shot.',
+    'Preserve the same characters, wardrobe, environment, lighting, screen direction and visual style from the Start Frame.',
+    shot.character_action ? 'Final pose/action: ' + shot.character_action : '',
+    shot.facial_expression ? 'Final expression: ' + shot.facial_expression : '',
+    'This is one clean frame, not a storyboard, collage or contact sheet. No split screen, no extra panels, no text.',
+  ].filter(Boolean).join('\n');
+
+  const flowTransitionPrompt = [
+    'GOOGLE FLOW FRAME-TO-FRAME VIDEO PROMPT',
+    'Create one continuous cinematic shot that transitions smoothly from the uploaded Start Frame to the uploaded End Frame.',
+    shot.description || scene.action || scene.summary || scene.title || '',
+    shot.camera_movement ? 'Camera movement: ' + shot.camera_movement : 'Subtle controlled camera movement',
+    shot.character_action ? 'Character motion: ' + shot.character_action : '',
+    shot.dialogue ? 'Dialogue: ' + shot.dialogue : '',
+    shot.sfx ? 'Sound effects: ' + shot.sfx : '',
+    'Keep the same identity, wardrobe, props, weather, lighting, composition logic and screen direction throughout.',
+    'Do not invent extra characters, outfits, locations or camera cuts. Do not create a collage, storyboard, split screen or text.',
+  ].filter(Boolean).join('\n');
+
+  return {
+    image_prompt: imagePrompt,
+    video_prompt: videoPrompt,
+    start_frame_prompt: startFramePrompt,
+    end_frame_prompt: endFramePrompt,
+    flow_transition_prompt: flowTransitionPrompt,
+  };
 }
 
 export function statusLabel(value = '') {

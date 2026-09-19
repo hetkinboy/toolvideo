@@ -7,6 +7,8 @@ const EMPTY_SHOT = {
   duration: 5,
   character_ids: '[]',
   reference_asset_ids: '[]',
+  start_frame_asset_ids: '[]',
+  end_frame_asset_ids: '[]',
   description: '',
   camera_shot: 'medium shot',
   camera_angle: 'eye level',
@@ -22,6 +24,9 @@ const EMPTY_SHOT = {
   music: '',
   image_prompt: '',
   video_prompt: '',
+  start_frame_prompt: '',
+  end_frame_prompt: '',
+  flow_transition_prompt: '',
   status: 'draft',
 };
 
@@ -60,6 +65,15 @@ export default function ShotEditor({ shot, scene, project, characters = [], refe
 
   const selectedCharacterIds = parseJsonArray(form.character_ids || scene.character_ids);
   const selectedCharacters = characters.filter((character) => selectedCharacterIds.includes(character.id));
+  const imageAssets = referenceAssets.filter((asset) => asset.asset_type === 'image' && asset.status !== 'archived');
+  const startFrameId = parseJsonArray(form.start_frame_asset_ids)[0] || '';
+  const endFrameId = parseJsonArray(form.end_frame_asset_ids)[0] || '';
+  const assetLabel = (asset) => (asset.target_type || 'asset') + (asset.target_id ? ' · ' + asset.target_id : '') + ' · v' + (asset.version || 1);
+  const selectFrame = (field, value) => update(field, value ? JSON.stringify([value]) : '[]');
+  const copyFlowPromptPack = async () => {
+    const pack = [form.start_frame_prompt, form.end_frame_prompt, form.flow_transition_prompt].filter(Boolean).join(NL + NL + '---' + NL + NL);
+    if (pack) await navigator.clipboard.writeText(pack);
+  };
   const toggleCharacter = (characterId) => {
     const next = selectedCharacterIds.includes(characterId)
       ? selectedCharacterIds.filter((id) => id !== characterId)
@@ -154,6 +168,45 @@ export default function ShotEditor({ shot, scene, project, characters = [], refe
           </div>
           <Field label="Image prompt" name="image_prompt" value={form.image_prompt} onChange={update} type="textarea" rows={4} />
           <Field label="Video prompt" name="video_prompt" value={form.video_prompt} onChange={update} type="textarea" rows={4} />
+
+          <div className="card" style={{ padding: 'var(--space-4)', marginTop: 'var(--space-2)', border: '1px solid rgba(99, 102, 241, 0.35)', background: 'rgba(99, 102, 241, 0.07)' }}>
+            <div className="flex justify-between items-center" style={{ gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+              <div>
+                <strong style={{ color: 'var(--text-primary)' }}>🎞️ Google Flow: Start Frame → End Frame</strong>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>
+                  Mỗi shot chỉ chọn 1 ảnh đầu và 1 ảnh cuối. Không dùng bảng collage/storyboard làm frame.
+                </div>
+              </div>
+              <button type="button" className="btn btn--secondary btn--sm" onClick={copyFlowPromptPack} disabled={!form.flow_transition_prompt && !form.start_frame_prompt && !form.end_frame_prompt}>📋 Copy Flow Prompt Pack</button>
+            </div>
+
+            <div className="form-grid-2" style={{ marginTop: 'var(--space-3)' }}>
+              <div className="form-group">
+                <label className="label">🟢 Start Frame — ảnh mở đầu</label>
+                <select className="input" value={startFrameId} onChange={(event) => selectFrame('start_frame_asset_ids', event.target.value)}>
+                  <option value="">-- Chưa chọn ảnh Start Frame --</option>
+                  {imageAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.file_path || asset.thumbnail || assetLabel(asset)}</option>)}
+                </select>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>Một ảnh duy nhất thể hiện đúng khoảnh khắc tại giây 0.</div>
+              </div>
+              <div className="form-group">
+                <label className="label">🔵 End Frame — ảnh kết thúc</label>
+                <select className="input" value={endFrameId} onChange={(event) => selectFrame('end_frame_asset_ids', event.target.value)}>
+                  <option value="">-- Chưa chọn ảnh End Frame --</option>
+                  {imageAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.file_path || asset.thumbnail || assetLabel(asset)}</option>)}
+                </select>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: 4 }}>Một ảnh duy nhất thể hiện đúng tư thế/khoảnh khắc cuối.</div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center" style={{ marginTop: 'var(--space-3)', gap: 'var(--space-2)' }}>
+              <label className="label" style={{ margin: 0 }}>Prompt chuyển động giữa hai frame</label>
+              <button type="button" className="btn btn--primary btn--sm" onClick={generatePrompts}>⚡ Tạo lại Flow Pack</button>
+            </div>
+            <Field label="Start Frame Prompt" name="start_frame_prompt" value={form.start_frame_prompt} onChange={update} type="textarea" rows={4} />
+            <Field label="End Frame Prompt" name="end_frame_prompt" value={form.end_frame_prompt} onChange={update} type="textarea" rows={4} />
+            <Field label="Flow Transition Prompt" name="flow_transition_prompt" value={form.flow_transition_prompt} onChange={update} type="textarea" rows={5} />
+          </div>
         </div>
 
         <div className="modal__footer">

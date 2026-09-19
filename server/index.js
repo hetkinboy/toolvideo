@@ -60,6 +60,8 @@ function createCrudRoutes(tableName, options = {}) {
       const { v4: uuidv4 } = require('uuid');
       const id = req.body.id || uuidv4();
       const data = { ...req.body, id };
+      const shouldAutoLinkScene = tableName === 'scenes' && data.auto_link !== false;
+      delete data.auto_link;
 
       const columns = Object.keys(data);
       const placeholders = columns.map(() => '?').join(', ');
@@ -67,7 +69,8 @@ function createCrudRoutes(tableName, options = {}) {
 
       db.prepare(`INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`).run(...values);
 
-      const created = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
+      let created = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
+      if (shouldAutoLinkScene) created = autoLinkSceneEntities(db, created, { replace: true }).scene;
       res.status(201).json(created);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -78,16 +81,19 @@ function createCrudRoutes(tableName, options = {}) {
   router.put('/:id', (req, res) => {
     try {
       const data = { ...req.body, updated_at: new Date().toISOString() };
+      const shouldAutoLinkScene = tableName === 'scenes' && data.auto_link !== false;
       delete data.id;
       delete data.created_at;
+      delete data.auto_link;
 
       const sets = Object.keys(data).map(col => `${col} = ?`).join(', ');
       const values = Object.values(data);
 
       db.prepare(`UPDATE ${tableName} SET ${sets} WHERE id = ?`).run(...values, req.params.id);
 
-      const updated = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(req.params.id);
+      let updated = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(req.params.id);
       if (!updated) return res.status(404).json({ error: 'Not found' });
+      if (shouldAutoLinkScene && updated.status !== 'locked') updated = autoLinkSceneEntities(db, updated, { replace: false }).scene;
       res.json(updated);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -283,7 +289,7 @@ app.delete('/api/projects/:id', (req, res) => {
     const id = req.params.id;
     // Manual cascade to be 100% safe
     const tables = [
-      'project_bibles', 'characters', 'character_states', 'character_relationships',
+      'project_bibles', 'characters', 'character_states', 'character_outfits', 'character_relationships',
       'locations', 'items', 'factions', 'story_arcs', 'episodes', 'scenes', 'shots',
       'story_threads', 'foreshadows', 'knowledge_entries', 'story_state_snapshots',
       'prompts', 'assets'
@@ -305,6 +311,7 @@ app.use('/api/projects', createCrudRoutes('projects'));
 app.use('/api/bibles', createCrudRoutes('project_bibles'));
 app.use('/api/characters', createCrudRoutes('characters', { orderBy: 'sort_order ASC' }));
 app.use('/api/character-states', createCrudRoutes('character_states'));
+app.use('/api/character-outfits', createCrudRoutes('character_outfits', { orderBy: 'is_default DESC, created_at ASC' }));
 app.use('/api/character-relationships', createCrudRoutes('character_relationships'));
 app.use('/api/locations', createCrudRoutes('locations'));
 app.use('/api/items', createCrudRoutes('items'));
@@ -376,6 +383,233 @@ function parseIdArray(value) {
   }
 }
 
+
+function normalizeForSceneAnalysis(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function sameSceneLabel(left, right) {
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+  return a === b || normalizeForSceneAnalysis(a) === normalizeForSceneAnalysis(b);
+}
+function sceneAnalysisText(scene) {
+  return normalizeForSceneAnalysis([scene.title, scene.purpose, scene.summary, scene.action, scene.dialogue, scene.emotion_change, scene.transition, scene.starting_state, scene.ending_state].filter(Boolean).join(' '));
+}
+function containsScenePhrase(text, phrase) {
+  const p = normalizeForSceneAnalysis(phrase);
+  return p.length >= 2 && (' ' + text + ' ').includes(' ' + p + ' ');
+}
+function entityTerms(name, aliases = '') {
+  const nameParts = String(name || '').trim().split(/\s+/);
+  const shortName = nameParts.length >= 3 ? nameParts.slice(-2).join(' ') : '';
+  return [name, shortName, ...String(aliases || '').split(/[,;|/\n]+/)]
+    .map(x => x.trim())
+    .filter(x => normalizeForSceneAnalysis(x).length >= 2);
+}
+const sceneKeywordStopWords = new Set(['cua','cho','voi','trong','ngoai','mot','nhung','cac','dang','duoc','nay','kia','khi','thi','la','va','tu','den','tai','sau','truoc','nguoi','chuyen','bi','co','khong','tren','duoi','qua','lai']);
+function significantWords(value) {
+  return [...new Set(normalizeForSceneAnalysis(value).split(' ').filter(x => x.length >= 3 && !sceneKeywordStopWords.has(x)))];
+}
+function storyThreadMatches(text, thread) {
+  if (containsScenePhrase(text, thread.title)) return true;
+  const tw=significantWords(thread.title), hits=tw.filter(x => containsScenePhrase(text,x)).length;
+  if (tw.length && hits >= Math.min(2,tw.length)) return true;
+  return significantWords(thread.description).filter(x => x.length >= 5 && containsScenePhrase(text,x)).length >= 3;
+}
+function resolveSceneAppearances(db, projectId, rawAppearances) {
+  if (!rawAppearances) return {};
+  const entries = Array.isArray(rawAppearances)
+    ? rawAppearances
+    : Object.entries(rawAppearances).map(([key, value]) => ({
+        ...(typeof value === 'object' && value ? value : { outfit_name: value }),
+        character_name: typeof value === 'object' && value ? (value.character_name || value.character || key) : key,
+      }));
+  const characters = db.prepare('SELECT id, name, alias FROM characters WHERE project_id = ?').all(projectId);
+  const outfits = db.prepare('SELECT * FROM character_outfits WHERE project_id = ?').all(projectId);
+  const result = {};
+  for (const entry of entries) {
+    const characterKey = entry.character_id || entry.character_name || entry.character || entry.name;
+    const character = characters.find((candidate) => candidate.id === characterKey)
+      || characters.find((candidate) => entityTerms(candidate.name, candidate.alias).some((term) => sameSceneLabel(term, characterKey)));
+    if (!character) continue;
+    const outfitKey = entry.outfit_id || entry.outfit_name || entry.outfit;
+    const outfit = outfits.find((candidate) => candidate.id === outfitKey)
+      || outfits.find((candidate) => candidate.character_id === character.id && sameSceneLabel(candidate.name, outfitKey));
+    if (!outfit) continue;
+    result[character.id] = {
+      outfit_id: outfit.id,
+      reference_mode: entry.reference_mode === 'identity_only' ? 'identity_only' : 'identity_outfit',
+      notes: entry.notes || '',
+    };
+  }
+  return result;
+}
+
+// Import outfit records emitted by the outline/episode AI prompt before scenes
+// are linked. Scene appearance mappings can then resolve outfit_name reliably.
+function upsertOutlineOutfits(db, projectId, rawOutfits) {
+  const explicitOutfits = [
+    ...(Array.isArray(rawOutfits) ? rawOutfits : []),
+    ...(rawOutfits && typeof rawOutfits === 'object' && !Array.isArray(rawOutfits)
+      ? Object.entries(rawOutfits).flatMap(([characterName, outfits]) => (Array.isArray(outfits) ? outfits : [outfits]).filter(Boolean).map((outfit) => ({ ...outfit, character_name: outfit.character_name || characterName })))
+      : []),
+  ];
+  const characters = db.prepare('SELECT id, name, alias FROM characters WHERE project_id = ?').all(projectId);
+  const findCharacter = (value) => characters.find((character) =>
+    character.id === value || entityTerms(character.name, character.alias).some((term) => sameSceneLabel(term, value))
+  );
+  const result = [];
+
+  for (const outfit of explicitOutfits) {
+    const character = findCharacter(outfit.character_id || outfit.character_name || outfit.character);
+    const name = String(outfit.name || outfit.outfit_name || '').trim();
+    if (!character || !name) continue;
+
+    const values = [
+      outfit.era || outfit.period || '',
+      outfit.description || outfit.appearance || '',
+      outfit.visual_prompt || outfit.prompt || '',
+      outfit.tags || outfit.keywords || '',
+      outfit.is_default ? 1 : 0,
+    ];
+    const existing = db.prepare('SELECT id FROM character_outfits WHERE character_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))').get(character.id, name);
+    if (existing) {
+      db.prepare(`
+        UPDATE character_outfits
+        SET era = CASE WHEN TRIM(?) <> '' THEN ? ELSE era END,
+            description = CASE WHEN TRIM(?) <> '' THEN ? ELSE description END,
+            visual_prompt = CASE WHEN TRIM(?) <> '' THEN ? ELSE visual_prompt END,
+            tags = CASE WHEN TRIM(?) <> '' THEN ? ELSE tags END,
+            is_default = CASE WHEN ? = 1 THEN 1 ELSE is_default END,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(values[0], values[0], values[1], values[1], values[2], values[2], values[3], values[3], values[4], existing.id);
+      result.push({ id: existing.id, name, character_id: character.id, created: false });
+      continue;
+    }
+
+    const outfitId = uuidv4();
+    db.prepare('INSERT INTO character_outfits (id, project_id, character_id, name, era, description, visual_prompt, tags, is_default, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      outfitId, projectId, character.id, name, ...values, 'approved'
+    );
+    result.push({ id: outfitId, name, character_id: character.id, created: true });
+  }
+
+  return result;
+}
+
+function applyWardrobeToExistingEpisode(db, episode, rawScenes) {
+  const existingScenes = db.prepare('SELECT * FROM scenes WHERE episode_id = ? ORDER BY scene_number ASC').all(episode.id);
+  let scenesUpdated = 0;
+  for (const sourceScene of (Array.isArray(rawScenes) ? rawScenes : [])) {
+    const byNumber = sourceScene.scene_number == null ? null : existingScenes.find((candidate) => Number(candidate.scene_number) === Number(sourceScene.scene_number));
+    const byTitle = existingScenes.find((candidate) => sameSceneLabel(candidate.title, sourceScene.title));
+    const target = byNumber || byTitle;
+    if (!target) continue;
+
+    const appearances = resolveSceneAppearances(db, episode.project_id, sourceScene.character_appearances || sourceScene.appearances);
+    const characterIds = [...new Set([...parseIdArray(target.character_ids), ...Object.keys(appearances)])];
+    db.prepare('UPDATE scenes SET character_ids = ?, character_appearances = ?, updated_at = ? WHERE id = ?').run(
+      JSON.stringify(characterIds),
+      JSON.stringify(appearances),
+      new Date().toISOString(),
+      target.id
+    );
+    autoLinkSceneEntities(db, target.id, { replace: false });
+    scenesUpdated++;
+  }
+  return scenesUpdated;
+}
+
+function applyWardrobeToExistingOutline(db, projectId, data) {
+  const outfits = upsertOutlineOutfits(db, projectId, data.outfits || data.wardrobe);
+  let scenesUpdated = 0;
+  const existingEpisodes = db.prepare('SELECT * FROM episodes WHERE project_id = ?').all(projectId);
+  for (const sourceEpisode of (Array.isArray(data.episodes) ? data.episodes : [])) {
+    const episode = existingEpisodes.find((candidate) =>
+      sourceEpisode.episode_number != null && Number(candidate.episode_number) === Number(sourceEpisode.episode_number)
+    ) || existingEpisodes.find((candidate) => sameSceneLabel(candidate.title, sourceEpisode.title));
+    if (!episode) continue;
+    scenesUpdated += applyWardrobeToExistingEpisode(db, episode, sourceEpisode.scenes);
+  }
+  return { wardrobeOnly: true, charactersCount: 0, locationsCount: 0, episodesCount: 0, scenesCount: scenesUpdated, outfits, outfitsCount: outfits.length, scenesUpdated };
+}
+
+function autoLinkSceneEntities(db, sceneOrId, options = {}) {
+  const scene = typeof sceneOrId === 'string' ? db.prepare('SELECT * FROM scenes WHERE id = ?').get(sceneOrId) : sceneOrId;
+  if (!scene) throw new Error('Scene không tồn tại');
+
+  const locationContext = scene.location_id
+    ? db.prepare('SELECT name, type, description, environment FROM locations WHERE id = ?').get(scene.location_id)
+    : null;
+  const text = normalizeForSceneAnalysis([
+    sceneAnalysisText(scene),
+    locationContext?.name,
+    locationContext?.type,
+    locationContext?.description,
+    locationContext?.environment,
+  ].filter(Boolean).join(' '));
+  const characters = db.prepare('SELECT id, name, alias FROM characters WHERE project_id = ?').all(scene.project_id);
+  const items = db.prepare('SELECT id, name FROM items WHERE project_id = ?').all(scene.project_id);
+  const locations = db.prepare('SELECT id, name FROM locations WHERE project_id = ?').all(scene.project_id);
+  const threads = db.prepare("SELECT id, title, description FROM story_threads WHERE project_id = ? AND status NOT IN ('resolved', 'abandoned')").all(scene.project_id);
+  const outfits = db.prepare('SELECT * FROM character_outfits WHERE project_id = ?').all(scene.project_id);
+
+  const matchedCharacters = characters.filter((character) => entityTerms(character.name, character.alias).some((term) => containsScenePhrase(text, term)));
+  const matchedItems = items.filter((item) => containsScenePhrase(text, item.name));
+  const matchedLocations = locations.filter((location) => containsScenePhrase(text, location.name));
+  const matchedThreads = threads.filter((thread) => storyThreadMatches(text, thread));
+  const mergeIds = (existing, detected) => options.replace ? detected : [...new Set([...parseIdArray(existing), ...detected])];
+  const characterIds = mergeIds(scene.character_ids, matchedCharacters.map((entry) => entry.id));
+  const itemIds = mergeIds(scene.item_ids, matchedItems.map((entry) => entry.id));
+  const storyThreadIds = mergeIds(scene.story_thread_ids, matchedThreads.map((entry) => entry.id));
+  const locationId = options.replace ? (matchedLocations[0]?.id || null) : (scene.location_id || matchedLocations[0]?.id || null);
+
+  let appearances = {};
+  try { appearances = JSON.parse(scene.character_appearances || '{}') || {}; } catch { appearances = {}; }
+  for (const characterId of characterIds) {
+    if (appearances[characterId]?.outfit_id && !options.replace) continue;
+    const candidates = outfits.filter((outfit) => outfit.character_id === characterId);
+    const scored = candidates.map((outfit) => {
+      const terms = [outfit.name, outfit.era, ...String(outfit.tags || '').split(/[,;|]/)].filter(Boolean);
+      const score = terms.reduce((total, term, index) => total + (containsScenePhrase(text, term) ? (index === 0 ? 4 : 2) : 0), 0);
+      return { outfit, score };
+    }).sort((a, b) => b.score - a.score);
+    const selected = scored[0]?.score > 0 ? scored[0].outfit : candidates.find((outfit) => outfit.is_default);
+    if (selected) {
+      appearances[characterId] = {
+        ...(appearances[characterId] || {}),
+        outfit_id: selected.id,
+        reference_mode: 'identity_outfit',
+      };
+    }
+  }
+
+  db.prepare('UPDATE scenes SET character_ids = ?, item_ids = ?, story_thread_ids = ?, location_id = ?, character_appearances = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify(characterIds),
+    JSON.stringify(itemIds),
+    JSON.stringify(storyThreadIds),
+    locationId,
+    JSON.stringify(appearances),
+    new Date().toISOString(),
+    scene.id
+  );
+
+  return {
+    scene: db.prepare('SELECT * FROM scenes WHERE id = ?').get(scene.id),
+    detected: {
+      characters: matchedCharacters.map(({ id, name }) => ({ id, name })),
+      items: matchedItems.map(({ id, name }) => ({ id, name })),
+      locations: matchedLocations.map(({ id, name }) => ({ id, name })),
+      story_threads: matchedThreads.map(({ id, title }) => ({ id, title })),
+    },
+  };
+}
+app.post('/api/scenes/:sceneId/auto-link', (req,res) => {
+  try { res.json(autoLinkSceneEntities(getDb(),req.params.sceneId,{replace:req.body?.replace===true})); }
+  catch(err) { res.status(err.message==='Scene không tồn tại'?404:500).json({error:err.message}); }
+});
+
 function getIdentityPack(db, projectId, characterIds) {
   const ids = [...new Set(parseIdArray(characterIds))];
   if (ids.length === 0) return { characters: [], references: [] };
@@ -387,7 +621,7 @@ function getIdentityPack(db, projectId, characterIds) {
     WHERE project_id = ? AND id IN (${placeholders})
   `).all(projectId, ...ids);
   const references = db.prepare(`
-    SELECT id, target_id, reference_kind, file_path, thumbnail, version, status
+    SELECT id, asset_type, target_type, target_id, reference_kind, file_path, thumbnail, version, status
     FROM assets
     WHERE project_id = ?
       AND target_type = 'character'
@@ -400,6 +634,18 @@ function getIdentityPack(db, projectId, characterIds) {
   return { characters, references };
 }
 
+
+function getSceneOutfitReferences(db, scene) {
+  let appearances = {};
+  try { appearances = JSON.parse(scene.character_appearances || '{}') || {}; } catch { appearances = {}; }
+  const outfitIds = [...new Set(Object.values(appearances)
+    .filter((appearance) => appearance?.outfit_id && appearance.reference_mode !== 'identity_only')
+    .map((appearance) => appearance.outfit_id))];
+  if (!outfitIds.length) return [];
+  const placeholders = outfitIds.map(() => '?').join(', ');
+  return db.prepare(`SELECT * FROM assets WHERE target_type = 'outfit' AND target_id IN (${placeholders}) AND asset_type = 'image' AND status <> 'archived' ORDER BY version DESC, created_at DESC`).all(...outfitIds);
+}
+
 function identityLockText(identityPack) {
   if (!identityPack.characters.length) return '';
   const refsByCharacter = identityPack.references.reduce((map, ref) => {
@@ -408,7 +654,7 @@ function identityLockText(identityPack) {
   }, {});
 
   return [
-    'CHARACTER IDENTITY LOCK — preserve the same face, hair, eye color, body proportions and signature outfit in every frame:',
+    'CHARACTER IDENTITY LOCK — preserve the same face, hair, eye color, apparent age and body proportions in every frame. Clothing is NOT part of identity:',
     ...identityPack.characters.map((character) => {
       const reference = refsByCharacter[character.id]
         ?.map((ref) => `${ref.reference_kind || 'other'}: ${ref.file_path || ref.thumbnail || `asset:${ref.id}`}`)
@@ -418,11 +664,11 @@ function identityLockText(identityPack) {
         ? `chronological age=${character.age || 'unknown'}, apparent visual age=${visibleAge} (visual age overrides chronological age for appearance)`
         : `visual age=${visibleAge}`;
       return [
-        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}, outfit=${character.default_outfit || 'signature outfit'}`,
+        `${character.name}: ${ageLock}, face=${character.face || character.appearance || 'consistent face'}, hair=${character.hair || 'consistent hair'}, eyes=${character.eyes || 'consistent eyes'}, body=${character.body || 'consistent body'}`,
         reference ? `Reference image: ${reference}` : '',
       ].filter(Boolean).join(', ');
     }),
-    'Do not change character identity, hairstyle, eye color or outfit unless the shot explicitly says so.',
+    'Use reference images for identity only. Ignore clothing shown in identity references whenever the Scene specifies a named outfit.',
   ].join('\n');
 }
 
@@ -440,13 +686,25 @@ app.get('/api/characters/:characterId/reference-assets', (req, res) => {
   }
 });
 
+
+app.get('/api/characters/:characterId/outfits', (req, res) => {
+  try {
+    const db = getDb();
+    const outfits = db.prepare('SELECT * FROM character_outfits WHERE character_id = ? ORDER BY is_default DESC, created_at ASC').all(req.params.characterId);
+    const assets = db.prepare("SELECT * FROM assets WHERE target_type = 'outfit' AND asset_type = 'image' AND status <> 'archived' ORDER BY version DESC, created_at DESC").all();
+    res.json(outfits.map((outfit) => ({ ...outfit, assets: assets.filter((asset) => asset.target_id === outfit.id) })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/scenes/:sceneId/identity-pack', (req, res) => {
   try {
     const db = getDb();
-    const scene = db.prepare('SELECT id, project_id, character_ids FROM scenes WHERE id = ?').get(req.params.sceneId);
+    const scene = db.prepare('SELECT id, project_id, character_ids, character_appearances FROM scenes WHERE id = ?').get(req.params.sceneId);
     if (!scene) return res.status(404).json({ error: 'Scene không tồn tại' });
     const identityPack = getIdentityPack(db, scene.project_id, scene.character_ids);
-    res.json({ ...identityPack, identity_lock: identityLockText(identityPack) });
+    res.json({ ...identityPack, outfit_references: getSceneOutfitReferences(db, scene), identity_lock: identityLockText(identityPack) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -482,20 +740,22 @@ app.post('/api/scenes/:sceneId/shots/generate', (req, res) => {
     if (!project) return res.status(400).json({ error: 'Project của scene không tồn tại' });
     const identityPack = getIdentityPack(db, scene.project_id, scene.character_ids);
     const identityLock = identityLockText(identityPack);
+    const outfitReferences = getSceneOutfitReferences(db, scene);
 
     const maxShot = db.prepare('SELECT MAX(shot_number) AS maxNum FROM shots WHERE scene_id = ?').get(scene.id);
     const shotNumber = (maxShot?.maxNum || 0) + 1;
     const id = uuidv4();
     const visualStyle = project.visual_style || 'cinematic anime, highly detailed, dramatic lighting';
     const imagePrompt = [
-      visualStyle,
+      scene.image_prompt || visualStyle,
+      scene.image_prompt ? '' : scene.character_prompt || identityLock,
       scene.action ? `Action: ${scene.action}` : '',
       scene.time_of_day ? `Time of day: ${scene.time_of_day}` : '',
-      identityLock,
       project.aspect_ratio ? `--ar ${project.aspect_ratio}` : ''
     ].filter(Boolean).join(', ');
     const videoPrompt = [
-      'Cinematic video shot',
+      scene.video_prompt || 'Cinematic video shot',
+      scene.video_prompt ? '' : scene.character_prompt || identityLock,
       scene.action || scene.summary || '',
       scene.dialogue ? `Dialogue: ${scene.dialogue}` : '',
       'natural character motion, expressive acting, coherent camera movement'
@@ -513,7 +773,7 @@ app.post('/api/scenes/:sceneId/shots/generate', (req, res) => {
       'medium shot', 'eye level', 'slow push in', scene.action || '',
       scene.dialogue || '', imagePrompt, videoPrompt,
       JSON.stringify(parseIdArray(scene.character_ids)),
-      JSON.stringify(identityPack.references.map((reference) => reference.id)),
+      JSON.stringify([...identityPack.references, ...outfitReferences].map((reference) => reference.id)),
       'script_done'
     );
 
@@ -869,6 +1129,7 @@ app.post('/api/continuity/check', (req, res) => {
     const knowledge = db.prepare('SELECT * FROM knowledge_entries WHERE project_id = ?').all(project_id);
     const characters = db.prepare('SELECT * FROM characters WHERE project_id = ?').all(project_id);
     const items = db.prepare('SELECT * FROM items WHERE project_id = ?').all(project_id);
+    const outfits = db.prepare('SELECT * FROM character_outfits WHERE project_id = ?').all(project_id);
 
     let scene = null;
     let prevScene = null;
@@ -877,6 +1138,43 @@ app.post('/api/continuity/check', (req, res) => {
       if (scene) {
         prevScene = db.prepare('SELECT * FROM scenes WHERE episode_id = ? AND scene_number < ? ORDER BY scene_number DESC LIMIT 1').get(scene.episode_id, scene.scene_number);
       }
+    }
+
+    const selectedCharacterIds = scene ? parseIdArray(scene.character_ids) : [];
+    const selectedItemIds = scene ? parseIdArray(scene.item_ids) : [];
+    const selectedCharacters = characters.filter((character) => selectedCharacterIds.includes(character.id));
+    const selectedItems = items.filter((item) => selectedItemIds.includes(item.id));
+    let characterAppearances = {};
+    try { characterAppearances = JSON.parse(scene?.character_appearances || '{}') || {}; } catch { characterAppearances = {}; }
+    const sceneReferenceAssets = scene ? db.prepare(`SELECT target_type, target_id, asset_type, status FROM assets WHERE project_id = ? AND asset_type = 'image' AND status <> 'archived'`).all(project_id) : [];
+    const hasCharacterReference = (characterId) => sceneReferenceAssets.some((asset) => asset.target_type === 'character' && asset.target_id === characterId);
+    const hasOutfitReference = (outfitId) => sceneReferenceAssets.some((asset) => asset.target_type === 'outfit' && asset.target_id === outfitId);
+
+    // Production readiness checks make the result useful before an image/video is generated.
+    if (scene) {
+      if (!scene.location_id) {
+        warnings.push({ type: 'missing_location', title: 'Chưa gán địa điểm', description: 'Scene cần một Location để giữ bối cảnh, ánh sáng và không gian nhất quán giữa các shot.' });
+      }
+      if (!selectedCharacterIds.length) {
+        warnings.push({ type: 'missing_characters', title: 'Chưa chọn nhân vật', description: 'Hãy chọn các nhân vật thực sự xuất hiện trong Scene hoặc xác nhận đây là cảnh chỉ có môi trường.' });
+      }
+      for (const character of selectedCharacters) {
+        if (!hasCharacterReference(character.id)) {
+          warnings.push({ type: 'missing_reference', title: `Thiếu ảnh tham chiếu: ${character.name}`, description: `Nhân vật ${character.name} chưa có ảnh reference trong Character Library. Prompt vẫn chạy được nhưng Identity Lock chưa đầy đủ.` });
+        }
+      }
+      for (const character of selectedCharacters) {
+        const appearance = characterAppearances[character.id] || {};
+        const outfit = outfits.find((candidate) => candidate.id === appearance.outfit_id && candidate.character_id === character.id);
+        if (!outfit) {
+          warnings.push({ type: 'missing_outfit', title: 'Chưa chọn trang phục: ' + character.name, description: 'Hãy chọn một bộ đồ có tên trong Kho trang phục của ' + character.name + '. Hệ thống sẽ không dùng default_outfit để tránh sai thời kỳ.' });
+        } else if (appearance.reference_mode === 'identity_outfit' && !hasOutfitReference(outfit.id)) {
+          warnings.push({ type: 'missing_outfit_reference', title: 'Trang phục chưa có ảnh: ' + outfit.name, description: 'Scene đã chọn “' + outfit.name + '” cho ' + character.name + ' nhưng bộ đồ chưa có ảnh tham chiếu. Prompt chữ vẫn dùng được, nhưng hình có thể lệch thiết kế.' });
+        }
+      }
+      if (!String(scene.character_prompt || '').trim()) warnings.push({ type: 'missing_character_prompt', title: 'Thiếu Character Prompt', description: 'Cần prompt mô tả danh tính và ngoại hình nhân vật cho cảnh này.' });
+      if (!String(scene.image_prompt || '').trim()) warnings.push({ type: 'missing_image_prompt', title: 'Thiếu Image Prompt', description: 'Cần prompt tạo keyframe/hình ảnh cho Scene hoặc từng Shot.' });
+      if (!String(scene.video_prompt || '').trim()) warnings.push({ type: 'missing_video_prompt', title: 'Thiếu Video Prompt', description: 'Cần prompt mô tả chuyển động camera, hành động và trạng thái đầu/cuối của video.' });
     }
 
     const textToAnalyze = `${draft_content || ''} ${scene?.dialogue || ''} ${scene?.action || ''} ${scene?.summary || ''}`;
@@ -953,8 +1251,20 @@ app.post('/api/continuity/check', (req, res) => {
       suggestions.push('Tính liên tục rất tốt: Vị trí, trạng thái chấn thương và bí mật của nhân vật hoàn toàn khớp với Canon.');
     }
 
+    const ready = errors.length === 0 && warnings.length === 0;
+    const score = Math.max(0, 100 - (errors.length * 25) - (warnings.length * 8));
+    const checks = [
+      { key: 'canon', label: 'Canon / World Rules', status: errors.some((item) => item.type === 'canon_violation') ? 'blocker' : 'pass' },
+      { key: 'story_state', label: 'Story State & Knowledge', status: errors.some((item) => ['item_condition_error', 'knowledge_leak'].includes(item.type)) ? 'blocker' : warnings.some((item) => ['unresolved_injury', 'knowledge_leak'].includes(item.type)) ? 'warning' : 'pass' },
+      { key: 'visual_references', label: 'Visual References', status: warnings.some((item) => ['missing_reference', 'missing_location', 'missing_outfit', 'missing_outfit_reference'].includes(item.type)) ? 'warning' : 'pass' },
+      { key: 'prompt_pack', label: 'Character / Image / Video Prompt', status: warnings.some((item) => item.type?.startsWith('missing_') && item.type?.includes('prompt')) ? 'warning' : 'pass' },
+    ];
+
     res.json({
       valid: errors.length === 0,
+      ready,
+      score,
+      checks,
       errors,
       warnings,
       suggestions,
@@ -979,6 +1289,9 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
     const importTransaction = db.transaction(() => {
       // 0. Deduplication / Reset old outline if replaceExisting is true (default: true)
       const replaceExisting = data.replaceExisting !== false;
+      if (data.wardrobeOnly === true) {
+        return applyWardrobeToExistingOutline(db, projectId, data);
+      }
       if (replaceExisting) {
         db.prepare('DELETE FROM character_states WHERE project_id = ?').run(projectId);
         db.prepare('DELETE FROM characters WHERE project_id = ?').run(projectId);
@@ -1094,6 +1407,45 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
 
           createdCharacters.push({ id: charId, name: c.name });
         }
+      }
+
+      // 3. Extract the wardrobe library from the AI outline.
+      // Outfits are created once and reused by every Scene through their names.
+      const createdOutfits = [];
+      const explicitOutfits = [
+        ...(Array.isArray(data.outfits) ? data.outfits : []),
+        ...(Array.isArray(data.wardrobe) ? data.wardrobe : []),
+        ...(Array.isArray(data.characters) ? data.characters.flatMap((character) => (character.outfits || []).map((outfit) => ({ ...outfit, character_name: outfit.character_name || character.name }))) : []),
+      ];
+      const projectCharacters = db.prepare('SELECT id, name, alias, default_outfit FROM characters WHERE project_id = ?').all(projectId);
+      const findOutlineCharacter = (value) => projectCharacters.find((character) =>
+        character.id === value || entityTerms(character.name, character.alias).some((term) => sameSceneLabel(term, value))
+      );
+      const explicitCharacterIds = new Set();
+      for (const outfit of explicitOutfits) {
+        const character = findOutlineCharacter(outfit.character_id || outfit.character_name || outfit.character);
+        if (!character || !outfit.name) continue;
+        const existing = db.prepare('SELECT id FROM character_outfits WHERE character_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))').get(character.id, outfit.name);
+        if (existing) {
+          explicitCharacterIds.add(character.id);
+          continue;
+        }
+        const outfitId = uuidv4();
+        db.prepare('INSERT INTO character_outfits (id, project_id, character_id, name, era, description, visual_prompt, tags, is_default, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          outfitId, projectId, character.id, outfit.name, outfit.era || outfit.period || '', outfit.description || outfit.appearance || '', outfit.visual_prompt || outfit.prompt || '', outfit.tags || outfit.keywords || '', outfit.is_default ? 1 : 0, 'approved'
+        );
+        createdOutfits.push({ id: outfitId, name: outfit.name, character_id: character.id });
+        explicitCharacterIds.add(character.id);
+      }
+      for (const character of projectCharacters) {
+        if (explicitCharacterIds.has(character.id) || !character.default_outfit) continue;
+        const existing = db.prepare('SELECT id FROM character_outfits WHERE character_id = ? AND is_default = 1').get(character.id);
+        if (existing) continue;
+        const outfitId = uuidv4();
+        db.prepare('INSERT INTO character_outfits (id, project_id, character_id, name, era, description, visual_prompt, tags, is_default, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          outfitId, projectId, character.id, 'Trang phục mặc định — ' + character.name, '', character.default_outfit, character.default_outfit, '', 1, 'approved'
+        );
+        createdOutfits.push({ id: outfitId, name: 'Trang phục mặc định — ' + character.name, character_id: character.id });
       }
 
       // 3. Insert Locations (with deduplication by name)
@@ -1282,8 +1634,8 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
           db.prepare(`
             INSERT INTO episodes (
               id, project_id, arc_id, episode_number, title, summary, goal, opening_hook,
-              main_conflict, climax, ending, cliffhanger, duration_target, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              main_conflict, climax, ending, cliffhanger, duration_target, duration_min, duration_max, content_density, word_budget, planned_duration, duration_notes, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             epId, projectId, assignedArcId, epNum,
             ep.title || `Tập ${epNum}`,
@@ -1294,7 +1646,13 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
             ep.climax || '',
             ep.ending || '',
             ep.ending_hook || ep.cliffhanger || '',
-            ep.estimated_duration || ep.duration_target || 120,
+            ep.duration_target ?? ep.estimated_duration ?? 120,
+            ep.duration_min ?? 90,
+            ep.duration_max ?? 300,
+            ep.content_density || 'adaptive',
+            ep.word_budget ?? 0,
+            ep.planned_duration ?? 0,
+            ep.duration_notes || '',
             'draft'
           );
           createdEpisodeCount++;
@@ -1304,13 +1662,16 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
             for (let j = 0; j < ep.scenes.length; j++) {
               const sc = ep.scenes[j];
               const scNum = sc.scene_number || (j + 1);
+              const sceneId = uuidv4();
+              const sceneAppearances = resolveSceneAppearances(db, projectId, sc.character_appearances || sc.appearances);
+              const sceneCharacterIds = [...new Set([...parseIdArray(sc.character_ids), ...Object.keys(sceneAppearances)])];
               db.prepare(`
                 INSERT INTO scenes (
                   id, project_id, episode_id, scene_number, title, purpose, summary, action,
                   dialogue, emotion_change, transition, starting_state, ending_state, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               `).run(
-                uuidv4(), projectId, epId, scNum,
+                sceneId, projectId, epId, scNum,
                 sc.title || `Cảnh ${scNum}`,
                 sc.purpose || '',
                 sc.summary || '',
@@ -1322,6 +1683,8 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
                 typeof sc.ending_state === 'object' ? JSON.stringify(sc.ending_state) : (sc.ending_state || '{}'),
                 'draft'
               );
+              db.prepare('UPDATE scenes SET character_ids = ?, character_appearances = ? WHERE id = ?').run(JSON.stringify(sceneCharacterIds), JSON.stringify(sceneAppearances), sceneId);
+              autoLinkSceneEntities(db, sceneId, { replace: false });
               createdSceneCount++;
             }
           }
@@ -1334,14 +1697,15 @@ app.post('/api/projects/:id/import-master-outline', (req, res) => {
         factionsCount: createdFactions.length,
         arcsCount: createdArcs.length,
         episodesCount: createdEpisodeCount,
-        scenesCount: createdSceneCount
+        scenesCount: createdSceneCount,
+        outfitsCount: createdOutfits.length
       };
     });
 
     const result = importTransaction();
     res.json({
       success: true,
-      message: 'Import toàn bộ dàn ý truyện thành công (Đã tối ưu và liên kết Arc/Phe phái)!',
+      message: result.wardrobeOnly ? 'Wardrobe updated without replacing existing scenes.' : 'Master outline imported successfully.',
       ...result
     });
   } catch (err) {
@@ -1562,7 +1926,7 @@ app.delete('/api/projects/:id/snapshots', (req, res) => {
 app.post('/api/episodes/:id/import-scenes', (req, res) => {
   const db = getDb();
   const episodeId = req.params.id;
-  const { scenes: newScenes, replaceExisting } = req.body;
+  const { scenes: newScenes, replaceExisting, outfits: outlineOutfits, wardrobeOnly } = req.body;
 
   if (!Array.isArray(newScenes) || newScenes.length === 0) {
     return res.status(400).json({ error: 'Danh sách cảnh quay trống' });
@@ -1573,6 +1937,11 @@ app.post('/api/episodes/:id/import-scenes', (req, res) => {
     if (!episode) return res.status(404).json({ error: 'Episode không tồn tại' });
 
     const importScenesTx = db.transaction(() => {
+      const importedOutfits = upsertOutlineOutfits(db, episode.project_id, outlineOutfits);
+      if (wardrobeOnly === true) {
+        const scenesUpdated = applyWardrobeToExistingEpisode(db, episode, newScenes);
+        return { wardrobeOnly: true, scenes: [], outfits: importedOutfits, outfitsCount: importedOutfits.length, scenesUpdated };
+      }
       let startSceneNum = 1;
       if (replaceExisting) {
         // Scenes can be referenced by continuity records. Detach those
@@ -1636,17 +2005,23 @@ app.post('/api/episodes/:id/import-scenes', (req, res) => {
           'draft'
         );
 
+        const sceneAppearances = resolveSceneAppearances(db, episode.project_id, sc.character_appearances || sc.appearances);
+        const sceneCharacterIds = [...new Set([...parseIdArray(sc.character_ids), ...Object.keys(sceneAppearances)])];
+        db.prepare('UPDATE scenes SET character_ids = ?, character_appearances = ? WHERE id = ?').run(JSON.stringify(sceneCharacterIds), JSON.stringify(sceneAppearances), sceneId);
+        autoLinkSceneEntities(db, sceneId, { replace: false });
         inserted.push({ id: sceneId, scene_number: scNum, title: sc.title });
       }
 
-      return inserted;
+      return { scenes: inserted, outfits: importedOutfits };
     });
 
     const result = importScenesTx();
     res.json({
       success: true,
-      message: `Đã import ${result.length} cảnh quay vào tập phim!`,
-      scenes: result
+      message: result.wardrobeOnly ? 'Wardrobe updated without replacing existing scenes.' : 'Episode scenes imported successfully.',
+      scenes: result.scenes,
+      outfits: result.outfits,
+      outfitsCount: result.outfits.length
     });
   } catch (err) {
     res.status(500).json({ error: 'Lỗi import scenes: ' + err.message });
@@ -1667,13 +2042,22 @@ app.get('/api/scenes/:id/visual-prompt', (req, res) => {
 
     // Parse characters and location
     let charList = [];
-    try { charList = JSON.parse(scene.characters || '[]'); } catch { }
+    try { charList = JSON.parse(scene.character_ids || '[]'); } catch { }
 
     let charPrompts = [];
     if (charList.length > 0) {
       const placeholders = charList.map(() => '?').join(', ');
-      const chars = db.prepare(`SELECT name, appearance, default_outfit FROM characters WHERE id IN (${placeholders})`).all(...charList);
-      charPrompts = chars.map(c => `${c.name}: ${c.appearance || ''}, wearing ${c.default_outfit || 'signature robes'}`);
+      const chars = db.prepare(`SELECT id, name, appearance FROM characters WHERE id IN (${placeholders})`).all(...charList);
+      let appearances = {};
+      try { appearances = JSON.parse(scene.character_appearances || '{}') || {}; } catch { appearances = {}; }
+      charPrompts = chars.map((character) => {
+        const outfit = appearances[character.id]?.outfit_id
+          ? db.prepare('SELECT name, era, description, visual_prompt FROM character_outfits WHERE id = ? AND character_id = ?').get(appearances[character.id].outfit_id, character.id)
+          : null;
+        return outfit
+          ? `${character.name}: ${character.appearance || ''}; named Scene Outfit “${outfit.name}”: ${outfit.visual_prompt || outfit.description || outfit.era}`
+          : `${character.name}: ${character.appearance || ''}; outfit unresolved, do not copy clothing from identity reference`;
+      });
     }
 
     let locPrompt = '';

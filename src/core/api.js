@@ -35,6 +35,11 @@ export const api = {
   createCharacter: (data) => request('/characters', { method: 'POST', body: data }),
   updateCharacter: (id, data) => request(`/characters/${id}`, { method: 'PUT', body: data }),
   deleteCharacter: (id) => request(`/characters/${id}`, { method: 'DELETE' }),
+  getCharacterOutfits: (characterId) => request(`/characters/${characterId}/outfits`),
+  getOutfits: (projectId) => request(`/character-outfits?project_id=${projectId}`),
+  createOutfit: (data) => request('/character-outfits', { method: 'POST', body: data }),
+  updateOutfit: (id, data) => request(`/character-outfits/${id}`, { method: 'PUT', body: data }),
+  deleteOutfit: (id) => request(`/character-outfits/${id}`, { method: 'DELETE' }),
 
   // Character States
   getCharacterStates: (projectId) => request(`/character-states?project_id=${projectId}`),
@@ -77,6 +82,7 @@ export const api = {
   getEpisodeScenes: (episodeId) => request(`/episodes/${episodeId}/scenes`),
   createScene: (data) => request('/scenes', { method: 'POST', body: data }),
   updateScene: (id, data) => request(`/scenes/${id}`, { method: 'PUT', body: data }),
+  autoLinkScene: (id, data = {}) => request(`/scenes/${id}/auto-link`, { method: 'POST', body: data }),
 
   // Phase 3: Shots / Storyboard
   getShots: (projectId) => request(`/shots?project_id=${projectId}`),
